@@ -1,3 +1,7 @@
+import sys
+sys.path.append("/mnt/home/asante/ceph/repos")
+sys.path.append("/mnt/home/asante/ceph/streams_in_dreams")
+
 import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
 import math
@@ -12,11 +16,17 @@ import h5py
 import k3d
 from gala.units import SimulationUnitSystem
 import gala.potential as gp
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from scipy.ndimage import gaussian_filter1d
+from scipy.optimize import curve_fit
+
 
 
 import os
+
+
 
 
 class DREAMSMW():
@@ -38,6 +48,8 @@ class DREAMSMW():
         ## Define the cosmology of the simulation
         self.cosmo = DREAMS_utils.get_cosmology(box=box,
                                                 snap_path=self.__snap_path__)
+        
+        self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=90)
 
 
     def __load_part_data__(self,
@@ -219,6 +231,33 @@ class DREAMSMW():
         r90 = r_sorted[np.argmin((mass_cdf-0.9)**2)]
 
         return r90
+    
+    def __fit_nfw__(self, snap: int):
+
+        # Load particles from z=0 snapshot
+        dat = self.__load_part_data__(snap=snap, PartType=1)
+
+        # Calculate critical density of the universe at snap
+        f = h5py.File(f"{self.__snap_path__}box_{self.__box__}/snap_{snap:03}.hdf5")
+        z = f["Header"].attrs["Redshift"]
+        rho_crit = self.cosmo.critical_density(z).to(u.Msun/u.kpc**3).value
+
+        # Calculate density profile of the DM halo
+        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+                                                   weights=dat["mass"], 
+                                                   bins=100,
+                                                   rangevals=[0,2.5])
+        # Fit NFW profile to the density profile
+        popt, pcov = curve_fit(lambda r, c, R_vir : DREAMS_utils.NFW_profile(r, c, R_vir, rho_crit),
+                       rbins, dvals,
+                       bounds=([1e-5, 1e-5], [1000, 1000]),
+                       )
+        
+        r_scale = popt[1]/popt[0]
+        r_vir = popt[1]
+        M_vir = np.sum(dat["mass"][dat["r"]<r_vir])
+
+        return r_scale, r_vir, M_vir
 
 
 
@@ -304,25 +343,33 @@ class DREAMSMW():
         return fig
 
 
-
-
 class EXPBFE_builder():
 
     def __init__(self, 
                  sim: DREAMSMW,
                  basis_params_dict: dict,
+                 density_dict: dict,
                  snapshots: list[int],
                  output_dir: str):
         
         self.sim = sim
         self.__output_dir__ = output_dir
 
+        # Define virial units
+        self.r_scale, self.r_vir, self.M_vir = sim.__fit_nfw__(snap=90)
+        
+        # Define units of the simulation
+        self.exp_units = SimulationUnitSystem(mass=self.M_vir*u.Msun, 
+                                              length=self.r_vir*u.kpc, 
+                                              G=1)
+
         # Build basis
         print("Building basis for the expansion...", flush=True)
         self.basis = {}
         for PartType, basis_params in basis_params_dict.items():
             basis = self.__build_basis__(PartType=PartType,
-                                         basis_params=basis_params)
+                                         basis_params=basis_params,
+                                         density_params= density_dict[PartType])
             self.basis[PartType] = basis
             
         # Calculate the coefficients 
@@ -335,7 +382,8 @@ class EXPBFE_builder():
     
     def __build_basis__(self, 
                         PartType: int,
-                        basis_params: dict = {}):
+                        basis_params: dict = {},
+                        density_params: dict = {}):
         
 
         # Load particles from z=0 snapshot
@@ -343,7 +391,7 @@ class EXPBFE_builder():
         
         # Define the basis parameters
         if PartType==1:
-            config = self.__get_DM_basis_config__(dat, basis_params)
+            config = self.__get_DM_basis_config__(dat, basis_params, density_params)
         
         # Load the basis config in the yaml file with the basis parameters
         yaml_file = f"{self.__output_dir__}basis_yaml_PartType1_box_{self.sim.__box__:04}.yml"
@@ -359,40 +407,47 @@ class EXPBFE_builder():
 
     def __get_DM_basis_config__(self, 
                                 dat, 
-                                basis_params = {}):
+                                basis_params = {},
+                                density_params = {}):
 
-        # Calculate virial and scale radii for the halo
-        # scale_r assumes: rho(r) = rho_MAX * e^(-r/scale_r) 
-        # (rho is density)
-
-        #r_vir = pynbody.analysis.halo.virial_radius(dat)
-
-        # Exclude stars outside r90
-        r90 = self.sim.__get_r90__(snap=90)
-        dat = dat[dat["r"]<r90]
-
-        log_r = np.log10(np.sqrt(dat["x"]**2 + dat["y"]**2 + dat["z"]**2))
-        rbins, dvals = DREAMS_utils.return_density(logr=log_r,
-                                                   weights=dat["mass"], 
-                                                   bins=400,
-                                                   rangevals=[0,np.log10(r90)])
+        # Default values for calculating the density profile
+        density_params_df = {"bins": 400,
+                             "rangevals": [0,2.5]}
         
-        r_scale = rbins[np.argmin((dvals-dvals[0]/math.e)**2)]
+        density_params_df.update(density_params)
 
+        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+                                                   weights=dat["mass"], 
+                                                   **density_params_df)
+        
+        # Scale values to virial quantities
+        rbins /= self.r_vir
+        dvals /= (self.M_vir / (self.r_vir**3))
+        
+        # Smooth density values
+        dvals = gaussian_filter1d(dvals, 4.)
+        
 
         # Create an EXP-compatible spherical basis function table 
         model_file = f"{self.__output_dir__}basis_empirical_PartType1_box_{self.sim.__box__:04}.txt" 
+        cache_file = model_file.replace(".txt",".cache.run0")
+
+        # Check if model or table have already been computed
+        if os.path.exists(model_file):
+            os.remove(model_file)
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+
         rbins, dvals, mass, potential = DREAMS_utils.makemodel_empirical(rvals=rbins,
                                                                          dvals=dvals,
                                                                          pfile=model_file) 
         config = {"id" : "sphereSL",
                   "parameters": {"numr": 4000,
-                                 "rmin": float(np.round(rbins[0], decimals=2)),
-                                 "rmax": float(np.round(rbins[-1], decimals=2)),
+                                 "rmin": float(1/self.r_vir),
+                                 "rmax": 1,
                                  "Lmax": 2,
                                  "nmax": 10,
-                                 "rmapping": float(np.round(r_scale, decimals=2)),
-                                 "self_consistent" : True,
+                                 "rmapping": 0.067,
                                  "modelname": model_file,
                                  "cachename": model_file.replace(".txt",".cache.run0")
                                  }
@@ -422,9 +477,9 @@ class EXPBFE_builder():
             # Load particles from z=0 snapshot
             dat = self.sim.__load_part_data__(snap=snap, PartType=PartType)   
 
-            # Exclude stars outside r90
-            r90 = self.sim.__get_r90__(snap=90)
-            dat = dat[dat["r"]<r90]
+            # Scale to virial units
+            mass = np.array(dat["mass"]) / self.M_vir
+            pos = np.vstack([dat["x"], dat["y"], dat["z"]]).T / self.r_vir
 
 
             # Read age of the universe at snapshot
@@ -433,12 +488,13 @@ class EXPBFE_builder():
             t = self.sim.cosmo.age(z).value                                                           
             
             # Calculate the coefficients of the BFE 
-            coefs = basis.createFromArray(dat["mass"], 
-                                          [dat["x"],dat["y"],dat["z"]], 
+            coefs = basis.createFromArray(mass, 
+                                          pos, 
                                           time=t)
             
             if coefs_container is None:
                 coefs_container = pyEXP.coefs.Coefs.makecoefs(coefs)
+                coefs_container.add(coefs)
             else:
                 coefs_container.add(coefs)
 
@@ -451,15 +507,141 @@ class EXPBFE_builder():
             coefs_container.WriteH5Coefs(coefs_file) 
         
         return coefs_container
+    
+
+    def __shell_average__(self,
+                          basis, 
+                          coefs,
+                          r_min: float, 
+                          field: str = None, 
+                          n_points=1000):
+        
+        # Load basis coefficients
+        basis.set_coefs(coefs)
+
+        theta = np.arccos(np.random.uniform(-1, 1, size=n_points))
+        phi = np.random.uniform(0, 2*np.pi, size=n_points)
+        r = r_min
+
+        x = r * np.sin(theta) * np.cos(phi)
+        y = r * np.sin(theta) * np.sin(phi)
+        z = r * np.cos(theta)
+
+        sph_avg = np.mean([basis.getFields(xi, yi, zi) for xi, yi, zi in zip(x, y, z)], axis=0)
+
+        output_dict = dict(zip(basis.getFieldLabels(), sph_avg))
+
+        if field is None:
+            return output_dict
+        else:
+            return output_dict[field]
+        
+
+    def plot_density_profile(self):
+        
+        dat = self.sim.__load_part_data__(snap=90, PartType=1)
+        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+                                                   weights=dat["mass"], 
+                                                   bins=100,
+                                                   rangevals=[0,2.5]) 
+        
+        # Get density contribution from different m values
+        exp_dens, exp_densm0, exp_densml0 = [],[],[]
+        rbins_exp = np.zeros(len(rbins)+1)
+        rbins_exp[1:] = rbins
+        for i in range(len(rbins_exp)-1):
+            out_dict = self.__shell_average__(field="dens", 
+                                              basis=self.basis[1],
+                                              coefs=self.coefs[1],
+                                              r_min=rbins_exp[i])
+            exp_dens.append(out_dict["dens"])
+            exp_densm0.append(out_dict["dens m=0"])
+            exp_densml0.append(out_dict["dens m>0"])
+        exp_dens = np.array(exp_dens)
+        
+        fig,ax = plt.subplots(figsize=(4,4))
+        ax.plot(rbins, dvals, label="Data")
+        ax.plot(rbins, exp_dens, label="EXP")
+        ax.plot(rbins, exp_densm0, label="EXP m=0")
+        ax.plot(rbins, exp_densml0, label="EXP m>0")
+        ax.set_yscale("log")
+        ax.set_xlabel("r [kpc]")
+        ax.set_ylabel("Density [$\\rm{M}_{\\odot}/\\rm{kpc}^3$]")
+        ax.set_xscale("log")
+        ax.legend()
+        
+        return fig,ax
+
+        
+
+    def plot_2D_integrated_field(self, 
+                                 basis,
+                                 coefs,
+                                 field: str,
+                                 x_bins: np.array,
+                                 y_bins: np.array,
+                                 z_bins: np.array,
+                                 ax: plt.axes,
+                                 integrate_over: str = "z",
+                                 **kwargs
+                                 ):
+        
+        basis.set_coefs(coefs)
+
+        # Understand which field to plot
+        field_labels = basis.getFieldLabels()
+        idx = field_labels.index(field)
+
+
+        # Understand which dimension to integrate on
+        if integrate_over=="z":
+            # Create array to hold the 2D field projection
+            exp_2d = np.zeros((len(x_bins),len(y_bins)))
+            dz = z_bins[1] - z_bins[0]
+            extent = [x_bins[0], x_bins[1], y_bins[0], y_bins[1]]
+            for i,xi in enumerate(x_bins):
+                for j, yj in enumerate(y_bins):
+                    field_sum = 0
+                    for zi in z_bins:
+                        outs = basis.getFields(xi, yj, zi)
+                        field_sum += outs[idx]*dz
+                    exp_2d[i,j] = field_sum
+
+        elif integrate_over=="y":
+            exp_2d = np.zeros((len(x_bins),len(z_bins)))
+            dy = y_bins[1] - y_bins[0]
+            extent = [x_bins[0], x_bins[1], z_bins[0], z_bins[1]]
+            for i,xi in enumerate(x_bins):
+                for j, zj in enumerate(z_bins):
+                    field_sum = 0
+                    for yi in y_bins:
+                        outs = basis.getFields(xi, yi, zj)
+                        field_sum += outs[idx]*dy
+                    exp_2d[i,j] = field_sum
+
+        elif integrate_over=="x":
+            exp_2d = np.zeros((len(y_bins),len(z_bins)))
+            dx = x_bins[1] - x_bins[0]
+            extent = [y_bins[0], y_bins[1], z_bins[0], z_bins[1]]
+            for i,yi in enumerate(y_bins):
+                for j, zj in enumerate(z_bins):
+                    field_sum = 0
+                    for xi in x_bins:
+                        outs = basis.getFields(xi, yi, zj)
+                        field_sum += outs[idx]*dx
+                    exp_2d[i,j] = field_sum
+        
+
+        # Plot the 2D projection
+        plot = ax.imshow(exp_2d, origin="lower",
+                         extent=extent, **kwargs)
+
+        return plot
 
 
 
     def build_gala_potential(self, **kwargs):
 
-        # Define units of the simulation
-        exp_units = SimulationUnitSystem(mass=1*u.Msun, 
-                                         length=1*u.kpc, 
-                                         G=1)
         
         pot = gp.CCompositePotential()
         for PartType in self.basis.keys():
@@ -467,12 +649,12 @@ class EXPBFE_builder():
             coefs_file = f"{self.__output_dir__}coefs_PartType{PartType}_box_{self.sim.__box__:04}.h5"
             basis_yaml = f"{self.__output_dir__}basis_yaml_PartType{PartType}_box_{self.sim.__box__:04}.yml"
 
-            pot[PartType] = gp.EXPPotential(units=exp_units,
+            pot[PartType] = gp.EXPPotential(units=self.exp_units,
                                             config_file=basis_yaml,
                                             coef_file=coefs_file,
                                             snapshot_time_unit=u.Gyr, **kwargs)
 
-        return pot, exp_units
+        return pot, self.exp_units
     
     def surface_projection(self,
                            basis,
@@ -480,15 +662,15 @@ class EXPBFE_builder():
                            field: str, # dens, dens m=0, dens m>0, potl, potl m-0, ...
                            time: float,
                            extent: list, # e.g. [[xmin, ymin, 0.],[xmax, ymax, 0.]]
-                           grid: list # [bins_x, bins_y, 0.]
+                           grid: list, # [bins_x, bins_y, 0.]
                            ):
         
         # Initialise surface field generator
         times = coefs.Times()
     
         generator = pyEXP.field.FieldGenerator(times, 
-                                               extent[0], 
-                                               extent[1], 
+                                               [el.to(self.exp_units["length"]).value for el in extent[0] if el!=0], 
+                                               [el.to(self.exp_units["length"]).value for el in extent[1] if el!=0], 
                                                grid)
         
         surfaces = generator.slices(basis, coefs)
@@ -506,13 +688,44 @@ class EXPBFE_builder():
                         grid[non_zero_entries[1]])
         
         xv, yv = np.meshgrid(x, y)
-
+        
         fig, ax = plt.subplots()
+        cbar_label = field
+
+        if field in ["dens", "dens m=0", "dens m>0"]:
+
+            # Convert to M_sun / kpc^2
+            surface = surface*(self.exp_units["mass"]/self.exp_units["length"]**2).to(u.Msun / u.pc**2)
+            surface = np.log10(surface)
+                
+            cbar_label = "$\\log_{10}(\\Sigma) \\; [\\rm{M}_{\\odot} \\, \\rm{pc}^{-2}]$"
+
+                
+        if field in ["potl", "potl m=0", "potl m>0"]:
+            # Convert to (km/s)^2
+            surface = surface*(self.exp_units["length"]**2 / self.exp_units["time"]**2).to(u.km**2 / u.s**2)
+            cbar_label = "$\\Phi \\; [\\rm{km}^2 \\, \\rm{s}^{-2}]$"
+
+        
         cont1 = ax.contour(xv, yv, surface, colors='k')
         cont1.clabel(fontsize=9, inline=True)
         cont2 = ax.contourf(xv, yv, surface)
         cbar = fig.colorbar(cont2)
-        cbar.set_label(field)
+        cbar.set_label(cbar_label)
+        
+        # Plot circles showing 10 and 100 kpc
+        for r in [10, 100]:
+            circle = patches.Circle(
+                        (0,0), # center coordinates
+                        r,  # Radius
+                        color="red",
+                        fill=False, 
+                        linewidth=2,
+                        linestyle='-'
+                    )
+            ax.add_patch(circle)
+            
+        
 
         return fig
 
@@ -554,9 +767,134 @@ class EXPBFE_builder():
         plot += volume
 
         return plot
+    
+    
+########################################################################
+
+def plot_acceleration_field_xy(pot,
+                               r_vir,
+                               t=13*u.Gyr,
+                               grid_lim: float = 1.,
+                               n_points: int = 100,
+                               z_level: float = 0.0):
+    
+    x = np.linspace(-grid_lim, grid_lim, n_points)
+    y = np.linspace(-grid_lim, grid_lim, n_points)
+
+    Fx = np.zeros((n_points,n_points))
+    Fy = np.zeros((n_points,n_points))
+
+    for i, xi in enumerate(x):
+        for j, yj in enumerate(y):
+            pos = [xi,yj,z_level]*u.kpc
+            acc = pot.acceleration(pos, t=t).to(u.km/u.s/u.Gyr).value
+            Fx[i,j] = acc[0][0]
+            Fy[i,j] = acc[1][0]
+
+    fig,axs = plt.subplots(1,2, sharex=True, sharey=True, layout="constrained")
+
+    axs[0].pcolormesh(x,y, Fx, 
+                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
+                    cmap="seismic")
+    plot = axs[1].pcolormesh(x,y, Fy, 
+                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
+                    cmap="seismic")
+
+    cbar = plt.colorbar(plot, ax=axs[:], orientation="horizontal", shrink=0.8)
+    cbar.set_label("Acceleration $[\\rm{km} \, \\rm{s}^{-1} \, \\rm{Gyr}^{-1}]$")
+    axs[0].set_xlabel("x [kpc]")
+    axs[1].set_xlabel("x [kpc]")
+    axs[0].set_ylabel("y [kpc]")
+    axs[0].set_aspect(1)
+    axs[1].set_aspect(1)
+    fig.suptitle(f"z = {z_level} [kpc]")
+
+    axs[0].set_title("$a_{X}$")
+    axs[1].set_title("$a_{Y}$")
+    
+    
+    for ax in axs:
+        # Plot circles showing 10 and 100 kpc
+        r_10kpc = 10 / r_vir
+        r_100kpc = 100 / r_vir
+        for r in [r_10kpc, r_100kpc]:
+            circle = patches.Circle(
+                        (0,0), # center coordinates
+                        r,  # Radius
+                        color="red",
+                        fill=False, 
+                        linewidth=2,
+                        linestyle='-'
+                    )
+            ax.add_patch(circle)
+    
+    
+    return fig,axs
+
+
+def plot_acceleration_field_xz(pot,
+                               r_vir,
+                               t=13*u.Gyr,
+                               grid_lim: float = 1.,
+                               n_points: int = 100,
+                               y_level: float = 0.0):
+    
+
+    x = np.linspace(-grid_lim, grid_lim, n_points)
+    z = np.linspace(-grid_lim, grid_lim, n_points)
+
+    Fx = np.zeros((n_points,n_points))
+    Fz = np.zeros((n_points,n_points))
+
+    for i, xi in enumerate(x):
+        for j, zj in enumerate(z):
+            pos = [xi,y_level,zj]*u.kpc
+            acc = pot.acceleration(pos, t=t).to(u.km/u.s/u.Gyr).value
+            Fx[i,j] = acc[0][0]
+            Fz[i,j] = acc[1][0]
+
+    fig,axs = plt.subplots(1,2, sharex=True, sharey=True, layout="constrained")
+
+    axs[0].pcolormesh(x,y_level, Fx, 
+                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
+                    cmap="seismic")
+    plot = axs[1].pcolormesh(x,y_level, Fz, 
+                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
+                    cmap="seismic")
+
+    cbar = plt.colorbar(plot, ax=axs[:], orientation="horizontal", shrink=0.8)
+    cbar.set_label("Acceleration $[\\rm{km} \, \\rm{s}^{-1} \, \\rm{Gyr}^{-1}]$")
+    axs[0].set_xlabel("x [kpc]")
+    axs[1].set_xlabel("x [kpc]")
+    axs[0].set_ylabel("z [kpc]")
+    axs[0].set_aspect(1)
+    axs[1].set_aspect(1)
+    fig.suptitle(f"y = {y_level} [R_vir]")
+
+    axs[0].set_title("$a_{X}$")
+    axs[1].set_title("$a_{Z}$")
+    
+    for ax in axs:
+        # Plot circles showing 10 and 100 kpc
+        r_10kpc = 10 / r_vir
+        r_100kpc = 100 / r_vir
+        for r in [r_10kpc, r_100kpc]:
+            circle = patches.Circle(
+                        (0,0), # center coordinates
+                        r,  # Radius
+                        color="red",
+                        fill=False, 
+                        linewidth=2,
+                        linestyle='-'
+                    )
+            ax.add_patch(circle)
+    
+    return fig,axs
+                        
+                            
+    
 
 
 
 
-
-        
+    
