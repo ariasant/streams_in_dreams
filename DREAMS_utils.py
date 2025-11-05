@@ -1,12 +1,298 @@
 import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
 import h5py
-import math
 import numpy as np
 import pynbody
 import sys
 sys.path.append("/mnt/home/asante/ceph/repos/")
-from nightmares.reader_funcs import load_zoom_particle_data_pynbody
+from pynbody import units
+
+
+
+def get_MW_idx(cat, model: str, param_dict: dict):
+    """
+    Selects the corrent MW-mass galaxy from each simulation given the group catalog.
+    This function only works for z~0
+    It selects the least contaminated halo with a mass within current uncertainties of the MW's mass
+    
+    Inputs 
+     - cat - a dictionary containing the 'GroupMassType' field from the FOF catalogs
+     
+    Returns
+     - mw_idx - the index into the group catalog for the target MW-mass galaxy
+    """
+    
+    h = param_dict['H0']/100
+    
+    masses = cat['GroupMassType'] * 1e10 / h
+    
+    tot_masses = np.sum(masses,axis=1)
+    if model == 'CDM':
+        mcut = (tot_masses > 5e11) & (tot_masses < 2.5e12)
+    elif model == 'WDM':
+        mcut = (tot_masses > 7e11) & (tot_masses < 2.5e12)
+    else:
+        print('no galaxies with this model yet!')
+    if True in np.unique(mcut):
+        contamination = masses[:,2] / tot_masses
+        idx = np.argmin(contamination[mcut])
+        mw_idx = np.arange(len(masses))[mcut][idx]
+    else:
+        mw_idx = None
+    return mw_idx
+
+def load_group_data(path, keys=None):
+    """
+    Read Group Data from the DREAMS simulations
+    
+    Inputs
+      path - the absolute or relative path to the hdf5 file you want to read from
+      keys - the data that you want to read from the simulation 
+             see https://www.tng-project.org/data/docs/specifications/ for a list of available data)
+      
+    Returns
+      cat - a dictionary that contains all of the group and subhalo information for the specified keys
+    """
+    cat = dict()
+    file = h5py.File(path)
+    if keys is None:
+        # Load all keys:
+        keys = list(file["Group"].keys()) + list(file["Subhalo"].keys())
+    
+    for key in keys:
+        if 'Group' in key:
+            cat[key] = np.array(file[f'Group/{key}'])
+        if 'Subhalo' in key:
+            cat[key] = np.array(file[f'Subhalo/{key}'])
+    file.close()
+    
+    return cat
+
+def load_particle_data(snap_path, box, snap, part_types):
+    """
+    revised from original, will use all keys instead of passing in subset 
+    Read particle data from the DREAMS simulations
+    
+    Inputs
+      path - the absolute or relative path to the hdf5 file you want to read from
+      keys - the data that you want to read from the simulation 
+             see https://www.tng-project.org/data/docs/specifications/ for a list of available data)
+      part_types - which particle types to load.
+                   0 - gas
+                   1 - high res dark matter
+                   2 - low res dark matter
+                   3 - tracers (not used in DREAMS)
+                   4 - stars
+                   5 - black holes
+      
+    Returns
+      cat - a dictionary that contains all of the particle information for the specified keys and particle types
+    """
+    
+    path = f'{snap_path}/box_{box}/snap_{snap:03}.hdf5'
+    
+    cat = dict()
+    with h5py.File(path) as ofile:
+        
+        if type(part_types) == type(0):
+            part_types = [part_types]
+        
+        for part_type in part_types:
+            if part_type <= 5:
+                keys = ofile[f'PartType{part_type}'].keys()
+                for key in keys:
+                    if part_type == 1 and key == 'Masses':
+                        cat[f'PartType{part_type}/{key}'] = np.ones(ofile['PartType1/ParticleIDs'].shape)*ofile['Header'].attrs['MassTable'][1]
+                    else:
+                        if f'PartType{part_type}/{key}' in ofile:
+                            cat[f'PartType{part_type}/{key}'] = np.array(ofile[f'PartType{part_type}/{key}'])
+            else:
+                print('Particle type does not exist, try an integer <= 5')
+                return
+    return cat
+
+def config_pynbody_units(snap_path, box, snap):
+    
+    #load in to find scale factor:
+    path = f'{snap_path}/box_{box}/snap_{snap:03}.hdf5'
+    param_info = np.loadtxt(f'{snap_path}/box_{box}/aux_files/ics_config.txt',  dtype='str', skiprows=20, max_rows=6)
+    
+    check = h5py.File(path)
+    a = 1/(check['Header'].attrs['Redshift']+1)
+    check.close()
+    
+    param_dict = {}
+    for i in range(len(param_info)):
+        param_dict[param_info[i][0]] = float(param_info[i][2])
+
+    pynbody.config['omegaM0'] = float(param_dict['Omega_m'])
+    pynbody.config['omegaL0'] = float(param_dict['Omega_L'])
+    pynbody.config['h'] = float(param_dict['H0'])/100 #should be .6909, but file gives 69.09
+    pynbody.config['omegaB0'] = float(param_dict['Omega_b'])
+    pynbody.config['sigma8'] = float(param_dict['sigma_8'])
+    pynbody.config['ns'] = float(param_dict['nspec'])
+    pynbody.config['a'] = a
+    pynbody.units.a = a
+    pynbody.units.h = float(param_dict['H0'])/100
+    
+    unit_dict = {'BirthPos': units.kpc * units.h**-1,
+            'BirthVel': units.a**1/2 * units.km * units.s**-1,
+            'Coordinates': units.kpc *units.a * units.h**-1,
+            'GFM_InitialMass': 1e10 * units.Msol * units.h**-1,
+            'GFM_Metallicity': units.Unit(1),
+            'GFM_Metals': units.Unit(1),
+            'GFM_MetalsTagged': units.Unit(1),
+            'GFM_StellarFormationTime': units.Unit(1),
+            'GFM_StellarPhotometrics': units.Unit(1),
+            'Masses': 1e10 * units.Msol * units.h**-1,
+            'ParticleIDs': units.Unit(1),
+            'Potential': units.km**2 * units.s**-2 * units.a**-1,
+            'SubfindDMDensity': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
+            'SubfindDensity': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
+            'SubfindHsml': units.kpc * units.a * units.h**-1,
+            'SubfindVelDisp': units.km * units.s**-1,
+            'Velocities': units.km * units.a**1/2 * units.s**-1,
+            'CenterOfMass': units.kpc * units.a * units.h**-1,
+            'Density': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
+            'ElectronAbundance': units.Unit(1),
+            'GFM_AGNRadiation': units.erg * units.s**-1 * units.cm**-2 * 4 * np.pi,
+            'GFM_CoolingRate': units.erg * units.s**-1 * units.cm**3,
+            'GFM_Metallicity': units.Unit(1),
+            'GFM_Metals': units.Unit(1),
+            'GFM_MetalsTagged': units.Unit(1),
+            'GFM_WindDMVelDisp': units.km * units.s**-1,
+            'GFM_WindHostHaloMass': 1e10 * units.Msol * units.h**-1,
+            'InternalEnergy': units.km**2 * units.s**-2,
+            'MagneticField': units.h * units.a**-2 * 1e5 * units.Msol**1/2 * units.kpc**-1/2* units.km * units.s**-1 * units.kpc**-1,
+            'MagneticFieldDivergence': units.h**3 * 1e5 * units.Msol**1/2 * units.km * units.a**-2 * units.s**-1 * units.kpc**-5/2 * units.a**-5/2,
+            'NeutralHydrogenAbundance': units.Unit(1),
+            'StarFormationRate': units.Msol * units.yr**-1,
+            'InternalEnergy': units.km**2 * units.s**-2,
+            'AllowRefinement': units.Unit(1),
+            'HighResGasMass': units.Unit(1)} #high res gas mass isn't defined in the tng webpage, gonna just set unit to one
+    
+    return unit_dict, param_dict
+
+
+def get_MW_idx_at_snap(snap: int,
+                       group_path: str,
+                       box: int,
+                       param_dict
+                       ):
+    
+    # Get MW-mass halo from z = 0
+    fof_path90 = f'{group_path}/box_{box}/fof_subhalo_tab_{90:03}.hdf5'
+    grp_cat90 = load_group_data(fof_path90)
+    model = group_path.split('/')[-4]
+    
+    mw_idx = get_MW_idx(grp_cat90, model, param_dict) 
+    
+    if mw_idx is None:
+        raise ValueError('No MW-like mass systems in this box!')
+
+    
+    #can't use the z = 0 MW mass idx finder here - need to identify the MW-mass halo at z = 0
+    #and then trace it thru time. Will need to load the merger tree to identify the correct halo
+    
+    tree_cat = h5py.File(group_path+'/box_'+str(int(box))+'/tree_extended.hdf5')
+    
+    mw_tree_id = tree_cat["SubhaloID"][(tree_cat["SnapNum"][:]==90) &
+                                        (tree_cat["SubhaloLen"][:]==grp_cat90["SubhaloLen"][mw_idx])][0]
+    subfind_idx = tree_cat["SubfindID"][tree_cat["SubhaloID"][...]==mw_tree_id][0]
+    
+    main_branch = {90: subfind_idx}
+
+    FirstProgID = tree_cat["FirstProgenitorID"][tree_cat["SubhaloID"][...]==mw_tree_id]
+
+    while FirstProgID!=-1:
+        snap_num = tree_cat["SnapNum"][tree_cat["SubhaloID"][...]==FirstProgID][0]
+        subfind_idx = tree_cat["SubfindID"][tree_cat["SubhaloID"][...]==FirstProgID][0]
+        main_branch[snap_num] = subfind_idx
+        
+        FirstProgID = tree_cat["FirstProgenitorID"][tree_cat["SubhaloID"][...]==FirstProgID]
+        
+    return main_branch[snap]
+    
+
+
+
+def load_zoom_particle_data_pynbody(snap_path: str, 
+                                    group_path: str, 
+                                    box: int, 
+                                    snap: int, 
+                                    part_type: int):
+    '''take in the snapshot path, the group path, the number box that you want
+    the snapshot of, the snapshot number (i.e. what time, here z ~ 0 = 90), 
+    the particle type. This will load all keys and port the data into pynbody with the correct cosmology
+                    0 - gas
+                   1 - high res dark matter
+                   2 - low res dark matter
+                   3 - tracers (not used in DREAMS)
+                   4 - stars
+                   5 - black holes
+    pass in whether or not you want to load subhaloes (no subhaloes = False, default)
+    '''
+
+    
+    # Configure pynbody with the cosmology of the simulation
+    unit_dict, param_dict = config_pynbody_units(snap_path, box, snap)
+    name_map = pynbody.snapshot.namemapper.AdaptiveNameMapper('gadgethdf-name-mapping',return_all_format_names=False)
+    
+
+    # Load subfind information
+    fof_path = f'{group_path}/box_{box}/fof_subhalo_tab_{snap:03}.hdf5'
+    grp_cat = load_group_data(fof_path)
+
+
+    # Identify the index in the subfind table of the MW mass halo at this snapshot
+    mw_idx = get_MW_idx_at_snap(snap,
+                                group_path,
+                                box,
+                                param_dict,
+                                )
+    
+    # If there is a larger halo, ignore the particles belonging to it
+    offsets = np.sum(grp_cat['GroupLenType'][:mw_idx],axis=0)
+    # Get how many particles of each type are in the MW halo
+    num_parts = grp_cat['SubhaloLenType'][grp_cat['GroupFirstSub'][mw_idx]] 
+
+    # Load all the particles in the simulation
+    dat = load_particle_data(snap_path, box, snap, [part_type])
+    
+    # Create output catalog
+    if part_type==0:
+        out = pynbody.new(gas=int(num_parts[part_type]))
+    elif part_type==1:
+        out = pynbody.new(dm=int(num_parts[part_type]))
+        # Masses are not stored with the other info
+        with h5py.File(f'{snap_path}/box_{box}/snap_{snap:03}.hdf5') as ofile:
+            out['Masses'] = np.ones(ofile['PartType1/ParticleIDs'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+            mapped_name = name_map('Masses', reverse=True)
+            out[mapped_name].units = unit_dict['Masses']
+            out[mapped_name] = np.ones(ofile['PartType1/ParticleIDs'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+    elif part_type==4:
+        out = pynbody.new(star=int(num_parts[part_type]))
+    
+    # Load all the other fields from 
+    for key in dat.keys():
+        key = key.split('/')[1]
+        mapped_name = name_map(key, reverse=True)
+        out[mapped_name] = dat[f'PartType{part_type}/{key}'][offsets[part_type]:offsets[part_type]+num_parts[part_type]]
+        out[mapped_name].units = unit_dict[key]
+        
+    
+    # Center the halo using the shrink sphere center method
+    pynbody.analysis.center(out, 
+                            mode='ssc',
+                            with_velocity=True, # Correct for the motion of the center of mass of the halo
+                            cen_size="5 kpc")
+    
+
+    # Convert to physical units
+    out.physical_units()
+
+    return out
+
 
 def rotate_galaxy(dat,r_max=None):
 
@@ -168,17 +454,13 @@ def get_rotation_matrix(box: int,
     """
 
     # Load star particles at z=0
-    dat, grp_dat = load_zoom_particle_data_pynbody(snap_path, 
-                                                   group_path, 
-                                                   box, 
-                                                   90, # snap number
-                                                   4, # PartType
-                                                   subhaloes=False)
+    dat = load_zoom_particle_data_pynbody(snap_path, 
+                                          group_path, 
+                                          box, 
+                                          90, # snap number
+                                          4, # PartType
+                                          )
     
-
-    # Center the galaxy, convert to physical units, and rotate to face-on
-    pynbody.analysis.center(dat, mode='ssc')
-    dat.physical_units()
     dat,rotation_matrix = rotate_galaxy(dat=dat) 
 
     return rotation_matrix
@@ -396,8 +678,6 @@ def makemodel(func,M,funcargs,rvals = 10.**np.linspace(-2.,4.,2000),pfile='',pla
         f.close()
     
     return rvals*rfac,dfac*dvals,mfac*mvals,pfac*pvals
-
-#R,D,M,P = makemodel(plummer_density,1.,[plummer_b],rvals = 10.**np.linspace(-3.,1.,2000),pfile='SLPlummer.dat')
 
 
 def get_cosmology(box,
