@@ -6,11 +6,17 @@ module load modules/2.4-20250724 cmake uv gcc openmpi hdf5 libtirpc eigen fftw g
 
 
 # Download EXP
-git clone --recursive https://github.com/EXP-code/EXP.git
+git clone --recursive https://github.com/EXP-code/EXP.git -b devel
 
 # Build EXP
 cd EXP
-cmake -G Ninja -B build -DCMAKE_INSTALL_RPATH=$PWD/install/lib --install-prefix $PWD/install -DBUILD_DOCS=YES -DENABLE_PYEXP=YES
+cmake -G Ninja -B build -DCMAKE_INSTALL_RPATH=$PWD/install/lib  \
+ --install-prefix $PWD/install \
+ -DBUILD_DOCS=YES  \
+ -DENABLE_PYEXP=YES \
+ -DENABLE_NBODY=YES \
+ -DENABLE_USER_ALL=YES \
+ -DENABLE_UTILS=ON
 cmake --build build
 cmake --install build 
 
@@ -30,13 +36,13 @@ source $venv_name/bin/activate
 uv pip install -r /mnt/home/asante/ceph/environments/exp/requirements.txt
 
 # Download gala development version
-git clone https://github.com/adrn/gala.git
+git clone https://github.com/adrn/gala.git -b devel
 
 # Build Gala
 cd gala
-uv venv
+
 # Export path to EXP libraries (needs to be set when the environment is activated)
-export GALA_EXP_PREFIX=$EXP_path/
-export GALA_EXP_LIB_PATH=$EXP_path/install/lib/
+export GALA_EXP_PREFIX=$EXP_path/install
+
 uv pip install -ve .
 
