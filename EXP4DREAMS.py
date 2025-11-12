@@ -1,5 +1,4 @@
 import sys
-sys.path.append("/mnt/home/asante/ceph/repos")
 sys.path.append("/mnt/home/asante/ceph/streams_in_dreams")
 
 import astropy.units as u
@@ -8,7 +7,6 @@ import math
 import numpy as np
 import os
 import pynbody
-from nightmares.reader_funcs import load_zoom_particle_data_pynbody
 import DREAMS_utils
 import pyEXP
 import yaml
@@ -60,16 +58,12 @@ class DREAMSMW():
     
 
         # Get raw simulation data
-        dat, grp_dat = load_zoom_particle_data_pynbody(self.__snap_path__, 
-                                                       self.__group_path__, 
-                                                       self.__box__, 
-                                                       snap, 
-                                                       PartType,
-                                                       subhaloes=False)
-    
-        # Centre the galaxy, convert to physical units
-        pynbody.analysis.center(dat, mode='ssc')
-        dat.physical_units()
+        dat = DREAMS_utils.load_zoom_particle_data_pynbody(self.__snap_path__, 
+                                                           self.__group_path__, 
+                                                           self.__box__, 
+                                                           snap, 
+                                                           PartType
+                                                           )
 
         if rotate:
             # Rotate to align total angular momentum vector to z-axis
@@ -101,19 +95,15 @@ class DREAMSMW():
             times.append(self.cosmo.age(f["Header"].attrs["Redshift"]).value)
 
             # Get raw simulation data
-            dat, grp_dat = load_zoom_particle_data_pynbody(self.__snap_path__, 
-                                                           self.__group_path__, 
-                                                           self.__box__, 
-                                                           snap, 
-                                                           4, # stars
-                                                           subhaloes=False)
+            dat, grp_dat = DREAMS_utils.load_zoom_particle_data_pynbody(self.__snap_path__, 
+                                                                        self.__group_path__, 
+                                                                        self.__box__, 
+                                                                        snap, 
+                                                                        4, # stars
+                                                                        )
             
             # Save position of centre in box coordinates
-            #centre_pos.append(grp_dat["SubhaloPos"][0])
             centre_pos.append(pynbody.analysis.halo.shrink_sphere_center(dat))
-
-            # Convert to physical units
-            dat.physical_units()
 
             # Select only stars in the inner galaxy
             dat = dat[dat["r"]<20]
@@ -260,6 +250,57 @@ class DREAMSMW():
         return r_scale, r_vir, M_vir
 
 
+    def track_particles(self,
+                        particleIDs: np.array,
+                        PartType: int,
+                        snapshots: list[int]):
+        
+        # Save position and velocity of the particles at different snapshots
+        out = {}
+        # List to put IDs of particles not found in any snapshot
+        flagged_particles = []
+        
+        # Load all the particles bound to the MW at different snapshots
+        particles_list = [self.__load_part_data__(snap=snap,
+                                                  PartType=PartType) for snap in snapshots]
+        
+        for pid in particleIDs:    
+            
+            xyz_list, v_xyz_list, E_list = [], [], []
+        
+            for snap in snapshots:
+                
+                # Load particles bound to the MW halo at snapshot
+                particles = particles_list[snapshots.index(snap)]
+                
+                #Check if particle is in the snapshot
+                idx = np.isin(particles["iord"],pid)
+                if np.sum(idx)==0:
+                    # Particle not found in this snapshot
+                    flagged_particles.append(pid)
+                    continue
+            
+                xyz = np.array([particles[idx][f] for f in ["x", "y","z"]])*u.kpc
+                v_xyz = np.array([particles[idx][f] for f in ["vx", "vy","vz"]])*(u.km/u.s)
+                
+                # Calculate the total energy of the particle
+                E = particles[idx]["phi"] + 0.5*np.sum(v_xyz**2)
+                
+                xyz_list.append(xyz)
+                v_xyz_list.append(v_xyz)
+                E_list.append(E)
+                
+                
+            out[pid] = {"xyz": np.hstack(xyz_list),
+                        "v_xyz": np.hstack(v_xyz_list),
+                        "E": np.hstack(E_list)
+                        }
+            
+        # Remove flagged particles
+        for pid in flagged_particles:
+            _ = out.pop(pid, None)
+            
+        return out
 
     
     def plot_subhalos_tracks(self):
@@ -758,7 +799,7 @@ class EXPBFE_builder():
         volume = k3d.volume(volume.astype(np.float32), 
                           alpha_coef=250,
                           color_range=value_range,  
-                          color_map=(np.array(k3d.colormaps.paraview_color_maps.Cool_to_Warm_Extended).reshape(-1,4) 
+                          color_map=(np.array(k3d.colormaps.paraview_color_maps.Blues).reshape(-1,4) 
                           * np.array([1,1.0,1.0,1.0])).astype(np.float32), 
                           compression_level=7)
         
