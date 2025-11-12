@@ -85,12 +85,14 @@ def frog_step(dt, pos, masses, softening, vel, accel, option):
 def run_sim(nsteps, nsave, dt, x, v, masses, softening, option):
 
     if option == 'tree':
-        accel = Accel(x, masses, softening, parallel=True)  # initialize acceleration
-        pot0 = Potential(x, masses, softening, parallel=True)
+        accel = Accel(x, masses, softening, parallel=True, theta=theta)  # initialize acceleration
+        pot0 = Potential(x, masses, softening, parallel=True, theta=theta)
     if option == 'plum':
         accel = plum_accel(x, M, a, G)
         r = np.sqrt(x[:,0]*x[:,0]+x[:,1]*x[:,1]+x[:,2]*x[:,2])
         pot0 = plum_pot(r, M, a, G) 
+    
+    K0 = 0.5*m1*np.sum(v**2,axis=1) 
 
     t = 0.  # initial time
     istep = 0
@@ -111,10 +113,13 @@ def run_sim(nsteps, nsave, dt, x, v, masses, softening, option):
         r = np.sqrt(x[:,0]*x[:,0]+x[:,1]*x[:,1]+x[:,2]*x[:,2])
         v2 = (v[:,0]*v[:,0]+v[:,1]*v[:,1]+v[:,2]*v[:,2])
         if option == 'tree':
-            pot = Potential(x, masses, softening, parallel=True)
+            pot = Potential(x, masses, softening, parallel=True, theta=theta)
         if option == 'plum':
             r = np.sqrt(x[:,0]*x[:,0]+x[:,1]*x[:,1]+x[:,2]*x[:,2])
             pot = plum_pot(r, M, a, G) 
+            
+        K = 0.5 * m1 * v2
+        # Total kinetic and potential energy of the system
         ke = 0.5 * m1 * np.sum(v2)
         pe = 0.5 * m1 * np.sum(pot)
         #
@@ -131,7 +136,7 @@ def run_sim(nsteps, nsave, dt, x, v, masses, softening, option):
         t += dt
         istep += 1
     
-    return rave, energies, vrat, ts, xsave, vsave, pot0, pot
+    return rave, energies, vrat, ts, xsave, vsave, pot0, pot, K0, K
     
 def plum_pot(r,M,a,G):
     pot = - G*M/np.sqrt(r*r+a*a)
@@ -207,8 +212,9 @@ init_opt = 'disp'
 dt = 0.1  # adjust this to control integration error
 nsteps = 1000
 
+theta = 0.1
 
-for exp_N in [7]:
+for exp_N in [4,5,6]:
     # set up
     N = 10**exp_N
     m1 = M /float(N)
@@ -224,12 +230,12 @@ for exp_N in [7]:
     v2 = (v[:,0]*v[:,0]+v[:,1]*v[:,1]+v[:,2]*v[:,2])
 
     # --- Run analytical profile (Plummer) ---
-    r_an, e_an, vir_an, time_an, xsv_an, vsv_an, pot0_an, pot_an = run_sim(
+    r_an, e_an, vir_an, time_an, xsv_an, vsv_an, pot0_an, pot_an, KE0_an, KE_an = run_sim(
         nsteps, nsave, dt, x, v, masses, softening, "plum"
     )
 
     # --- Run N-body simulation ---
-    r_nb, e_nb, vir_nb, time_nb, xsv_nb, vsv_nb, pot0_nb, pot_nb = run_sim(
+    r_nb, e_nb, vir_nb, time_nb, xsv_nb, vsv_nb, pot0_nb, pot_nb, KE0_nb, KE_nb = run_sim(
         nsteps, nsave, dt, x, v, masses, softening, run_opt
     )
 
@@ -243,7 +249,9 @@ for exp_N in [7]:
         'xsv': xsv_an,
         'vsv': vsv_an,
         'pot0': pot0_an,
-        'pot': pot_an
+        'pot': pot_an,
+        'KE0': KE0_an,
+        'KE': KE_an
     }
 
     ## 2. N-body Simulation Dictionary
@@ -255,7 +263,9 @@ for exp_N in [7]:
         'xsv': xsv_nb,
         'vsv': vsv_nb,
         'pot0': pot0_nb,
-        'pot': pot_nb
+        'pot': pot_nb,
+        'KE0': KE0_nb,
+        'KE': KE_nb
     }
 
     # --- Save Dictionaries as Pickle Files ---
@@ -270,5 +280,5 @@ for exp_N in [7]:
             print(f"An error occurred while saving {filename}: {e}")
 
     # Save the two dictionaries
-    save_as_pickle(analytical_results, f'/mnt/home/asante/ceph/parc/analytical_results_N{exp_N}.pkl')
-    save_as_pickle(nbody_results, f'/mnt/home/asante/ceph/parc/nbody_results_N{exp_N}.pkl')
+    save_as_pickle(analytical_results, f'/mnt/home/asante/ceph/parc/analytical_results_theta_{theta}_N{exp_N}.pkl')
+    save_as_pickle(nbody_results, f'/mnt/home/asante/ceph/parc/nbody_results_theta_{theta}_N{exp_N}.pkl')
