@@ -80,6 +80,33 @@ class DREAMSMW():
 
         return dat
     
+    
+    def select_disc_stars(self,
+                          snap: int,
+                          k_threshold=0.5, 
+                          r_max=1000,
+                          z_max=1000
+                          ):
+        
+        dat = self.__load_part_data__(snap=snap, PartType=4)
+        
+        dat['R'] = np.sqrt(dat['x']**2 + dat['y']**2)
+
+        # Calculate velocity in cylindrical coordinates
+        dat['vr'] = (dat['vx']*dat['x'] + dat['vy']*dat['y']) / dat['R'] # Radial velocity
+        dat['vtheta'] = (dat['vy']*dat['x']-dat['vx']*dat['y']) / dat['R'] # Rotational velocity
+
+        # Calculate the kinetic energy of the star particles
+        K_tot = (dat["vx"]**2 + dat["vy"]**2 + dat["vz"]**2)
+        
+        # Select disc stars based on the amount of kinetic energy in rotation
+        K_rot = dat['vtheta']**2
+        
+        # Optionally also based on distance to centre of the galaxy
+        disc_stars_ids = dat["iord"][(K_rot/K_tot>k_threshold) & (dat["r"]<r_max) & (dat["z"]**2<z_max**2)]
+        
+        return disc_stars_ids
+    
 
     def plot_center_L_evolution(self, 
                                 snapshots: list[int]):
@@ -383,26 +410,222 @@ class DREAMSMW():
 
         return fig
 
+class DREAMSMW_high_cadence(DREAMSMW):
 
+    def __init__(self, 
+                 snap_path: str):
+        
+        self.__snap_path__ = snap_path
+        # Get list of snapshot files from earliest to latest
+        self.snapshot_files = self.__get_snapshot_files__()
+        
+        # Set coordinates frame of reference
+        dat = self.__load_part_data__(snap=self.snapshot_files[-1],
+                                      PartType=4,
+                                      rotate=False)
+        _, self.rotation_matrix = DREAMS_utils.rotate_galaxy(dat=dat) 
+        
+        # Define cosmology of the simulation
+        f = h5py.File(f"{snap_path}{self.snapshot_files[-1]}")
+        Om_0 = f["Header"].attrs["Omega0"]
+        H0 = f["Header"].attrs["HubbleParam"]*100 
+        self.cosmo = FlatLambdaCDM(H0=H0, Om0=Om_0)
+        
+        # Get Fit NFW profile to galaxy
+        self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=self.snapshot_files[-1])
+        
+    def __get_snapshot_files__(self):
+        
+        # Get all the .hdf5 files in the directory
+        outputs = os.listdir(snap_path)
+        outputs = [out for out in outputs if ".hdf5" in out]
+        
+        # Order files by snapshot
+        n_outputs = sorted([int(out.replace("snap_","").replace(".hdf5","")) for out in outputs])
+        ordered_outputs = [f"snap_{n}.hdf5" for n in n_outputs]
+        
+        return ordered_outputs
+    
+    # Overwrite the function to load the data from the simulation
+    def __load_part_data__(self, 
+                           snap, 
+                           PartType, 
+                           rotate = True):
+        
+        # Load particle data
+        f = h5py.File(f"{snap_path}{snap}")
+        
+        
+        # Create pynbody simulation object
+        N = int(f["Header"].attrs["NumPart_Total"][PartType])
+        if PartType==0:
+            dat = pynbody.new(gas=N)
+        elif PartType==1:
+            dat = pynbody.new(dark=N)
+        elif PartType==4:
+            dat = pynbody.new(star=N)
+        else:
+            raise ValueError("Only gas (0), dark matter (1), ad star (4) PartTypes are supported")
+        
+        
+        # Define simulation units
+        a = float(f["Header"].attrs["Time"])
+        pynbody.config['omegaM0'] = float(f["Header"].attrs["Omega0"])
+        pynbody.config['omegaL0'] = float(f["Header"].attrs["OmegaLambda"])
+        pynbody.config['h'] = float(f["Header"].attrs["HubbleParam"]) #should be .6909, but file gives 69.09
+        pynbody.config['omegaB0'] = float(f["Header"].attrs["OmegaBaryon"])
+        pynbody.config['a'] = a
+        pynbody.units.a = a
+        pynbody.units.h = float(f["Header"].attrs["HubbleParam"])
+        
+        unit_dict = {'BirthPos': units.kpc * units.h**-1,
+            'BirthVel': units.a**1/2 * units.km * units.s**-1,
+            'Coordinates': units.kpc *units.a * units.h**-1,
+            'GFM_InitialMass': 1e10 * units.Msol * units.h**-1,
+            'GFM_Metallicity': units.Unit(1),
+            'GFM_Metals': units.Unit(1),
+            'GFM_MetalsTagged': units.Unit(1),
+            'GFM_StellarFormationTime': units.Unit(1),
+            'GFM_StellarPhotometrics': units.Unit(1),
+            'Masses': 1e10 * units.Msol * units.h**-1,
+            'ParticleIDs': units.Unit(1),
+            'Potential': units.km**2 * units.s**-2 * units.a**-1,
+            'SubfindDMDensity': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
+            'SubfindDensity': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
+            'SubfindHsml': units.kpc * units.a * units.h**-1,
+            'SubfindVelDisp': units.km * units.s**-1,
+            'Velocities': units.km * units.a**1/2 * units.s**-1,
+            'CenterOfMass': units.kpc * units.a * units.h**-1,
+            'Density': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
+            'ElectronAbundance': units.Unit(1),
+            'GFM_AGNRadiation': units.erg * units.s**-1 * units.cm**-2 * 4 * np.pi,
+            'GFM_CoolingRate': units.erg * units.s**-1 * units.cm**3,
+            'GFM_Metallicity': units.Unit(1),
+            'GFM_Metals': units.Unit(1),
+            'GFM_MetalsTagged': units.Unit(1),
+            'GFM_WindDMVelDisp': units.km * units.s**-1,
+            'GFM_WindHostHaloMass': 1e10 * units.Msol * units.h**-1,
+            'InternalEnergy': units.km**2 * units.s**-2,
+            'MagneticField': units.h * units.a**-2 * 1e5 * units.Msol**1/2 * units.kpc**-1/2* units.km * units.s**-1 * units.kpc**-1,
+            'MagneticFieldDivergence': units.h**3 * 1e5 * units.Msol**1/2 * units.km * units.a**-2 * units.s**-1 * units.kpc**-5/2 * units.a**-5/2,
+            'NeutralHydrogenAbundance': units.Unit(1),
+            'StarFormationRate': units.Msol * units.yr**-1,
+            'InternalEnergy': units.km**2 * units.s**-2,
+            'AllowRefinement': units.Unit(1),
+            'HighResGasMass': units.Unit(1)}
+
+        
+        # Create dictionary to map variable names from Illustris outputs to pynbody
+        name_map = pynbody.snapshot.namemapper.AdaptiveNameMapper('gadgethdf-name-mapping',return_all_format_names=False)
+        
+        # Assign units to each field in the data object
+        for key in f[f"PartType{PartType}"].keys():
+            mapped_name = name_map(key, reverse=True)
+            dat[mapped_name] = f[f"PartType{PartType}/{key}"]
+            dat[mapped_name].units = unit_dict[key]
+        
+        # Convert to physical units
+        dat.physical_units()
+        
+        # Center the halo using the shrink sphere center method
+        pynbody.analysis.center(dat, 
+                                mode='ssc',
+                                with_velocity=True, # Correct for the motion of the center of mass of the halo
+                                cen_size="5 kpc")
+        
+        if rotate:
+            # Rotate to align total angular momentum vector to z-axis
+            r_sim = np.stack([dat["x"], dat["y"], dat["z"]])
+            v_sim = np.stack([dat["vx"], dat["vy"], dat["vz"]])
+            # Apply rotation
+            r_rot = self.rotation_matrix @ r_sim
+            v_rot = self.rotation_matrix @ v_sim
+
+            for i,xi in enumerate(["x","y","z"]):
+                dat[f"{xi}"] = r_rot[i]
+                dat[f"v{xi}"] = v_rot[i]
+        
+        return dat
+    
+    def __fit_nfw__(self, snap: str):
+
+        # Load particles 
+        dat = self.__load_part_data__(snap=snap, PartType=1)
+
+        # Calculate density profile of the DM halo
+        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+                                                   weights=dat["mass"], 
+                                                   bins=100,
+                                                   rangevals=[0,2.5],
+                                                   smooth=True)
+        
+        # Calculate critical density of the universe at snap
+        f = h5py.File(f"{self.__snap_path__}{self.snapshot_files[-1]}")
+        z = f["Header"].attrs["Redshift"]
+        rho_crit = self.cosmo.critical_density(z).to(u.Msun/u.kpc**3).value
+        
+        # Fit NFW profile to the density profile
+        popt, pcov = curve_fit(lambda rbins, c, r_vir: self.__NFW_profile__(rbins, rho_crit, c, r_vir),
+                       rbins, dvals/max(dvals),
+                       bounds=([1e-5, 1e-5], [100, 400]),
+                       maxfev=1000
+                       )
+        
+        r_scale = popt[1]/popt[0]
+        r_vir = popt[1]
+        M_vir = np.sum(dat["mass"][dat["r"]<r_vir])
+
+        return r_scale, r_vir, M_vir
+    
+
+    def __NFW_profile__(self, r, rho_crit, c, r_vir):
+        
+        delta = 200/3 * c**3 / (np.log(1+c) - c/(1+c))
+        
+        x = r/(r_vir/c)
+        
+        d = rho_crit*delta / (x * (1+x)**2)
+
+        return  d/max(d)
+  
 class EXPBFE_builder():
 
     def __init__(self, 
-                 sim: DREAMSMW,
+                 sim,
                  basis_params_dict: dict,
                  density_dict: dict,
-                 snapshots: list[int],
-                 output_dir: str):
+                 snapshots: list, # can be int or str depending if it isn't or is highcadence
+                 output_dir: str,
+                 high_cadence: bool=False):
         
         self.sim = sim
         self.__output_dir__ = output_dir
+        self.snapshots = snapshots
 
         # Define virial units
-        self.r_scale, self.r_vir, self.M_vir = sim.__fit_nfw__(snap=90)
+        self.r_scale, self.r_vir, self.M_vir = sim.__fit_nfw__(snap=snapshots[-1])
         
         # Define units of the simulation
         self.exp_units = SimulationUnitSystem(mass=self.M_vir*u.Msun, 
                                               length=self.r_vir*u.kpc, 
                                               G=1)
+        
+        # Define the name of the output files
+        self.model_files_dict = {} # Density tables
+        self.basis_files_dict = {} # Basis functions
+        self.coefs_files_dict = {} # Coefficients
+        
+        for PartType in basis_params_dict.keys():
+            if not high_cadence:
+                self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}_box_{self.sim.__box__:04}.txt" 
+                self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}_box_{self.sim.__box__:04}.yml"
+                self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}_box_{self.sim.__box__:04}.h5"
+            
+            else:
+                self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}_highcadence.txt" 
+                self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}_highcadence.yml"
+                self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}_highcadence.h5"
+                
 
         # Build basis
         print("Building basis for the expansion...", flush=True)
@@ -428,14 +651,13 @@ class EXPBFE_builder():
         
 
         # Load particles from z=0 snapshot
-        dat = self.sim.__load_part_data__(snap=90, PartType=PartType)
+        dat = self.sim.__load_part_data__(snap=self.snapshots[-1], PartType=PartType)
         
         # Define the basis parameters
         if PartType==1:
-            config = self.__get_DM_basis_config__(dat, basis_params, density_params)
+            yaml_file = self.__get_DM_basis_config__(dat, basis_params, density_params)
         
         # Load the basis config in the yaml file with the basis parameters
-        yaml_file = f"{self.__output_dir__}basis_yaml_PartType1_box_{self.sim.__box__:04}.yml"
         with open(yaml_file, "r") as f:
             yaml_config = f.read()
 
@@ -459,18 +681,16 @@ class EXPBFE_builder():
 
         rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
                                                    weights=dat["mass"], 
+                                                   smooth=True,
                                                    **density_params_df)
         
         # Scale values to virial quantities
         rbins /= self.r_vir
         dvals /= (self.M_vir / (self.r_vir**3))
         
-        # Smooth density values
-        dvals = gaussian_filter1d(dvals, 4.)
-        
 
         # Create an EXP-compatible spherical basis function table 
-        model_file = f"{self.__output_dir__}basis_empirical_PartType1_box_{self.sim.__box__:04}.txt" 
+        model_file = self.model_files_dict[1]  
         cache_file = model_file.replace(".txt",".cache.run0")
 
         # Check if model or table have already been computed
@@ -486,7 +706,7 @@ class EXPBFE_builder():
                   "parameters": {"numr": 4000,
                                  "rmin": float(1/self.r_vir),
                                  "rmax": 1,
-                                 "Lmax": 2,
+                                 "Lmax": 5,
                                  "nmax": 10,
                                  "rmapping": 0.067,
                                  "modelname": model_file,
@@ -498,12 +718,12 @@ class EXPBFE_builder():
         config["parameters"].update(basis_params)
         print(config)
         # Save yaml file for constructing gala potential
-        yaml_file = f"{self.__output_dir__}basis_yaml_PartType1_box_{self.sim.__box__:04}.yml"
+        yaml_file = self.basis_files_dict[1]
 
         with open(yaml_file, "w") as f:
             yaml.dump(config, f, default_flow_style=False)
 
-        return config
+        return yaml_file
     
 
     def __get_coefs__(self,
@@ -524,7 +744,11 @@ class EXPBFE_builder():
 
 
             # Read age of the universe at snapshot
-            f = h5py.File(f"{self.sim.__snap_path__}box_{self.sim.__box__}/snap_{snap:03}.hdf5")
+            try:
+                f = h5py.File(f"{self.sim.__snap_path__}box_{self.sim.__box__}/snap_{snap:03}.hdf5")
+            except AttributeError:
+                f = h5py.File(f"{self.sim.__snap_path__}{snap}")
+                
             z = f["Header"].attrs["Redshift"]
             t = self.sim.cosmo.age(z).value                                                           
             
@@ -540,7 +764,8 @@ class EXPBFE_builder():
                 coefs_container.add(coefs)
 
         # Save the coefficients
-        coefs_file = f"{self.__output_dir__}coefs_PartType{PartType}_box_{self.sim.__box__:04}.h5"
+        coefs_file = self.coefs_files_dict[PartType]
+            
         if os.path.exists(coefs_file):
             os.remove(coefs_file)
             coefs_container.WriteH5Coefs(coefs_file) 
@@ -687,12 +912,9 @@ class EXPBFE_builder():
         pot = gp.CCompositePotential()
         for PartType in self.basis.keys():
             # Read basis and coefficients of EXP approximation
-            coefs_file = f"{self.__output_dir__}coefs_PartType{PartType}_box_{self.sim.__box__:04}.h5"
-            basis_yaml = f"{self.__output_dir__}basis_yaml_PartType{PartType}_box_{self.sim.__box__:04}.yml"
-
             pot[PartType] = gp.EXPPotential(units=self.exp_units,
-                                            config_file=basis_yaml,
-                                            coef_file=coefs_file,
+                                            config_file=self.basis_files_dict[PartType],
+                                            coef_file=self.coefs_files_dict[PartType],
                                             snapshot_time_unit=u.Gyr, **kwargs)
 
         return pot, self.exp_units
@@ -731,6 +953,8 @@ class EXPBFE_builder():
         xv, yv = np.meshgrid(x, y)
         
         fig, ax = plt.subplots()
+        ax.set_xlim([min(x.value),max(x.value)])
+        ax.set_ylim([min(y.value), max(y.value)])
         cbar_label = field
 
         if field in ["dens", "dens m=0", "dens m>0"]:
@@ -808,7 +1032,7 @@ class EXPBFE_builder():
         plot += volume
 
         return plot
-    
+  
     
 ########################################################################
 
