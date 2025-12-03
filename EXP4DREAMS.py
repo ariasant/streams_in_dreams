@@ -260,10 +260,10 @@ class DREAMSMW():
         rho_crit = self.cosmo.critical_density(z).to(u.Msun/u.kpc**3).value
 
         # Calculate density profile of the DM halo
-        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+        rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
                                                    weights=dat["mass"], 
                                                    bins=100,
-                                                   rangevals=[0,2.5])
+                                                   rangevals=[1,300])
         # Fit NFW profile to the density profile
         popt, pcov = curve_fit(lambda r, c, R_vir : DREAMS_utils.NFW_profile(r, c, R_vir, rho_crit),
                        rbins, dvals,
@@ -553,10 +553,10 @@ class DREAMSMW_high_cadence(DREAMSMW):
         dat = self.__load_part_data__(snap=snap, PartType=1)
 
         # Calculate density profile of the DM halo
-        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+        rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
                                                    weights=dat["mass"], 
                                                    bins=100,
-                                                   rangevals=[0,2.5],
+                                                   rangevals=[1,300],
                                                    smooth=True)
         
         # Calculate critical density of the universe at snap
@@ -620,13 +620,14 @@ class EXPBFE_builder():
                 self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}_box_{self.sim.__box__:04}.txt" 
                 self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}_box_{self.sim.__box__:04}.yml"
                 self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}_box_{self.sim.__box__:04}.h5"
+                
             
             else:
                 self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}_highcadence.txt" 
                 self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}_highcadence.yml"
                 self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}_highcadence.h5"
                 
-
+        
         # Build basis
         print("Building basis for the expansion...", flush=True)
         self.basis = {}
@@ -643,6 +644,7 @@ class EXPBFE_builder():
             self.coefs[PartType] = self.__get_coefs__(basis=basis,
                                                       snapshots=snapshots,
                                                       PartType=PartType)
+            
     
     def __build_basis__(self, 
                         PartType: int,
@@ -656,6 +658,8 @@ class EXPBFE_builder():
         # Define the basis parameters
         if PartType==1:
             yaml_file = self.__get_DM_basis_config__(dat, basis_params, density_params)
+        elif PartType==4:
+            yaml_file = self.__get_star_basis_config__(dat, basis_params, density_params)
         
         # Load the basis config in the yaml file with the basis parameters
         with open(yaml_file, "r") as f:
@@ -679,7 +683,7 @@ class EXPBFE_builder():
         
         density_params_df.update(density_params)
 
-        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+        rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
                                                    weights=dat["mass"], 
                                                    smooth=True,
                                                    **density_params_df)
@@ -710,7 +714,7 @@ class EXPBFE_builder():
                                  "nmax": 10,
                                  "rmapping": 0.067,
                                  "modelname": model_file,
-                                 "cachename": model_file.replace(".txt",".cache.run0")
+                                 "cachename": cache_file
                                  }
                  }
         
@@ -724,6 +728,50 @@ class EXPBFE_builder():
             yaml.dump(config, f, default_flow_style=False)
 
         return yaml_file
+    
+    def __get_star_basis_config__(self, 
+                                  dat,
+                                  basis_params = {},
+                                  density_params = {}):
+
+        cache_file = self.model_files_dict[4].replace(".txt",".cache.run0")
+        
+        config = {"id" : "cylinder",
+                  "parameters": {"acyl": float(self.sim.r_scale_disc/self.sim.r_vir),       # The scale length of the exponential disk
+                                 "hcyl": float(self.sim.z_scale_disc/self.sim.r_vir),      # The scale height of the exponential disk
+                                 "lmaxfid": 32,      # The maximum spherical harmonic order for the input basis
+                                 "nmaxfid": 32,      # The radial order for the input spherical basis
+                                 "mmax": 6,          # The maximum azimuthal order for the cylindrical basis
+                                 "nmax": 12,         # The maximum radial order of the cylindrical basis
+                                 "ncylnx": 256,      # The number of grid points in mapped cylindrical radius
+                                 "ncylny": 128,      # The number of grid points in mapped verical scale
+                                 "ncylodd": 3,       # The number of anti-symmetric radial basis functions per azimuthal order m
+                                 "rnum": 1000,       # The number of radial integration knots in the inner product
+                                 "pnum": 0,          # The number of azimuthal integration knots (pnum: 0, assume axisymmetric target density)
+                                 "tnum": 80,         # The number of colatitute integration knots
+                                 "ashift": 0.5,      # Target shift length in scale lengths to create more variance
+                                 "vflag": 16,        # Verbosity flag: print diagnostics to stdout for vflag>0
+                                 "logr": False,      # Log scaling in cylindrical radius
+                                 "cachename": cache_file,  # The cache file name
+                                }   
+                 }
+        
+        # Optional arguments:
+        # "dtype": "python",  # Use user-supplied python module
+        # "pyname": "pyDens", # The module name
+        
+        # Update config parameters with the one specified at the class initialization
+        config["parameters"].update(basis_params)
+        print(config)
+        # Save yaml file for constructing gala potential
+        yaml_file = self.basis_files_dict[4]
+
+        with open(yaml_file, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+
+        return yaml_file
+        
+
     
 
     def __get_coefs__(self,
@@ -806,10 +854,10 @@ class EXPBFE_builder():
     def plot_density_profile(self):
         
         dat = self.sim.__load_part_data__(snap=90, PartType=1)
-        rbins, dvals = DREAMS_utils.return_density(logr=np.log10(dat["r"]),
+        rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
                                                    weights=dat["mass"], 
                                                    bins=100,
-                                                   rangevals=[0,2.5]) 
+                                                   rangevals=[1,300]) 
         
         # Get density contribution from different m values
         exp_dens, exp_densm0, exp_densml0 = [],[],[]
