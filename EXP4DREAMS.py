@@ -47,8 +47,25 @@ class DREAMSMW():
         self.cosmo = DREAMS_utils.get_cosmology(box=box,
                                                 snap_path=self.__snap_path__)
         
+        # Calculate characteristic scales of the galaxy
         self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=90)
-
+        
+        dat = self.__load_part_data__(snap=90, PartType=4)
+        disc_star_ids = self.select_disc_stars(dat, 
+                                               k_threshold=0.7, 
+                                               r_max=30,
+                                               z_max=10)
+        disc_dat = dat[np.isin(dat["iord"], disc_star_ids)]
+        self.r_scale_disc = self.__fit_scale_radius__(disc_dat)
+        self.z_scale_disc = self.__fit_scale_height__(disc_dat)
+        
+        print(f"""Galaxy {box}:\r
+               Scale Radius (DM): \t\t{self.r_scale:.1f} kpc\r
+               Virial Radius: \t\t{self.r_vir:.1f} kpc\r
+               Virial Mass: \t\t{self.M_vir:.1g} M_sun\r
+               Disc Scale Radius: \t\t{self.r_scale_disc:.1f} kpc\r
+               Disc Scale Height: \t\t{self.z_scale_disc:.1f} kpc
+               """)
 
     def __load_part_data__(self,
                            snap: int, 
@@ -82,13 +99,11 @@ class DREAMSMW():
     
     
     def select_disc_stars(self,
-                          snap: int,
+                          dat,
                           k_threshold=0.5, 
                           r_max=1000,
                           z_max=1000
                           ):
-        
-        dat = self.__load_part_data__(snap=snap, PartType=4)
         
         dat['R'] = np.sqrt(dat['x']**2 + dat['y']**2)
 
@@ -106,6 +121,7 @@ class DREAMSMW():
         disc_stars_ids = dat["iord"][(K_rot/K_tot>k_threshold) & (dat["r"]<r_max) & (dat["z"]**2<z_max**2)]
         
         return disc_stars_ids
+    
     
 
     def plot_center_L_evolution(self, 
@@ -275,6 +291,35 @@ class DREAMSMW():
         M_vir = np.sum(dat["mass"][dat["r"]<r_vir])
 
         return r_scale, r_vir, M_vir
+    
+    def __fit_scale_radius__(self, dat):
+        
+        R = dat["rxy"]
+        Rbins, dvals_R = DREAMS_utils.return_density(r=R,
+                                                     weights=dat["mass"],
+                                                     rangevals=[0.5,max(R)],
+                                                     bins=200,
+                                                     log=False,
+                                                     smooth=True)
+
+        R_s = DREAMS_utils.get_scale_factor(Rbins, dvals_R, dvals_R[0])
+        
+        return R_s
+    
+    def __fit_scale_height__(self, dat):
+        
+        z = np.abs(dat["z"])
+        zbins, dvals_z = DREAMS_utils.return_density(r=z,
+                                                     weights=dat["mass"],
+                                                     rangevals=[0,z.max()],
+                                                     bins=200,
+                                                     log=False,
+                                                     smooth=True)
+
+        z_s = DREAMS_utils.get_scale_factor(zbins, dvals_z, dvals_z[0])
+        
+        return z_s
+        
 
 
     def track_particles(self,
@@ -409,7 +454,6 @@ class DREAMSMW():
 
 
         return fig
-
 class DREAMSMW_high_cadence(DREAMSMW):
 
     def __init__(self, 
@@ -433,6 +477,23 @@ class DREAMSMW_high_cadence(DREAMSMW):
         
         # Get Fit NFW profile to galaxy
         self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=self.snapshot_files[-1])
+        
+        dat = self.__load_part_data__(snap=self.snapshot_files[-1], PartType=4)
+        disc_star_ids = self.select_disc_stars(dat, 
+                                               k_threshold=0.7, 
+                                               r_max=30,
+                                               z_max=10)
+        disc_dat = dat[np.isin(dat["iord"], disc_star_ids)]
+        self.r_scale_disc = self.__fit_scale_radius__(disc_dat)
+        self.z_scale_disc = self.__fit_scale_height__(disc_dat)
+        
+        print(f"""High-cadence snpashots Galaxy:\r
+               Scale Radius (DM): \t\t{self.r_scale:.1f} kpc\r
+               Virial Radius: \t\t{self.r_vir:.1f} kpc\r
+               Virial Mass: \t\t{self.M_vir:.1g} M_sun\r
+               Disc Scale Radius: \t\t{self.r_scale_disc:.1f} kpc\r
+               Disc Scale Height: \t\t{self.z_scale_disc:.1f} kpc
+               """)
         
     def __get_snapshot_files__(self):
         
@@ -601,13 +662,10 @@ class EXPBFE_builder():
         self.sim = sim
         self.__output_dir__ = output_dir
         self.snapshots = snapshots
-
-        # Define virial units
-        self.r_scale, self.r_vir, self.M_vir = sim.__fit_nfw__(snap=snapshots[-1])
         
         # Define units of the simulation
-        self.exp_units = SimulationUnitSystem(mass=self.M_vir*u.Msun, 
-                                              length=self.r_vir*u.kpc, 
+        self.exp_units = SimulationUnitSystem(mass=self.sim.M_vir*u.Msun, 
+                                              length=self.sim.r_vir*u.kpc, 
                                               G=1)
         
         # Define the name of the output files
@@ -689,8 +747,8 @@ class EXPBFE_builder():
                                                    **density_params_df)
         
         # Scale values to virial quantities
-        rbins /= self.r_vir
-        dvals /= (self.M_vir / (self.r_vir**3))
+        rbins /= self.sim.r_vir
+        dvals /= (self.sim.M_vir / (self.sim.r_vir**3))
         
 
         # Create an EXP-compatible spherical basis function table 
@@ -708,14 +766,17 @@ class EXPBFE_builder():
                                                                          pfile=model_file) 
         config = {"id" : "sphereSL",
                   "parameters": {"numr": 4000,
-                                 "rmin": float(1/self.r_vir),
+                                 "rmin": float(1/self.sim.r_vir),
                                  "rmax": 1,
                                  "Lmax": 5,
                                  "nmax": 10,
-                                 "rmapping": 0.067,
+                                 "rmapping": float(self.sim.r_scale/self.sim.r_vir),
                                  "modelname": model_file,
-                                 "cachename": cache_file
-                                 }
+                                 "cachename": cache_file,
+                                 "pcavar": True,
+                                 "subsamp": 1
+                                 },
+                  "runtag": "run0"
                  }
         
         # Update config parameters with the one specified at the class initialization
@@ -778,7 +839,9 @@ class EXPBFE_builder():
                       basis,
                       snapshots: list[int],
                       PartType: int):    
-
+        
+        # Important for the covariance file
+        os.chdir(self.__output_dir__)
         coefs_container = None
 
         for snap in snapshots:  
@@ -787,8 +850,8 @@ class EXPBFE_builder():
             dat = self.sim.__load_part_data__(snap=snap, PartType=PartType)   
 
             # Scale to virial units
-            mass = np.array(dat["mass"]) / self.M_vir
-            pos = np.vstack([dat["x"], dat["y"], dat["z"]]).T / self.r_vir
+            mass = np.array(dat["mass"]) / self.sim.M_vir
+            pos = np.vstack([dat["x"], dat["y"], dat["z"]]).T / self.sim.r_vir
 
 
             # Read age of the universe at snapshot
@@ -804,6 +867,11 @@ class EXPBFE_builder():
             coefs = basis.createFromArray(mass, 
                                           pos, 
                                           time=t)
+            # Compute the covariance matrix for the coefficients
+            if PartType==1:
+                basis.writeCoefCovariance("sphereSL", "run0", t)
+            elif PartType==4:
+                basis.writeCoefCovariance("cylinder", "run0", t)
             
             if coefs_container is None:
                 coefs_container = pyEXP.coefs.Coefs.makecoefs(coefs)
@@ -821,6 +889,17 @@ class EXPBFE_builder():
             coefs_container.WriteH5Coefs(coefs_file) 
         
         return coefs_container
+    
+    def __get_CoefCovariance__(self, 
+                               PartType: int):
+        
+        # Read-in the covariance matrix of the coefficients
+        if PartType==1:
+            covar = pyEXP.basis.CovarianceReader(f'{self.__output_dir__}/coefcovar.sphereSL.run0.h5')
+        elif PartType==4:
+            covar = pyEXP.basis.CovarianceReader(f'{self.__output_dir__}/coefcovar.cylinder.run0.h5')
+        
+        return covar
     
 
     def __shell_average__(self,
