@@ -191,12 +191,14 @@ init_opt = "disp"
 
 # Simulation parameters
 eps = 0.1 # softening length
-dt = 0.1
-nsteps = 1000
+dt = 0.01
+nsteps = 10000
 theta = 0.7 # aperture of tree for force calculation
 
 output_dir = "/mnt/home/asante/ceph/PlummerNbody/N6/"
 
+
+t_outputs=[i for i in range(0,nsteps)]
 
 N = 1000000
 # Generate ICs
@@ -214,7 +216,7 @@ r_nb, e_nb, vir_nb, time_nb, pot0_nb, pot_nb, KE0_nb, KE_nb, xf, vf = run_sim(
         masses=masses,
         softening=softening,
         option="tree",
-        t_outputs=[i for i in range(0,nsteps+1, 20)],
+        t_outputs=t_outputs,
         output_dir=output_dir
     )
 
@@ -241,13 +243,11 @@ fig.savefig(f"{output_dir}energy_change.pdf")
 
 
 # Plot density profile
-logr0 = np.log10(np.sqrt(np.sum(x0**2,axis=1)))
-logrf = np.log10(np.sqrt(np.sum(xf**2,axis=1)))
-density_params_df = {"bins": 100,
-                     "rangevals": [0.5,1.5]}
+density_params_df = {"bins": 200,
+                     "rangevals": [0.01,50]}
 
-rbins, dvals = DREAMS_utils.return_density(logr=logr0, weights=masses, **density_params_df, smooth=True)
-rbinsf, dvalsf = DREAMS_utils.return_density(logr=logrf, weights=masses, **density_params_df, smooth=True)
+rbins, dvals = DREAMS_utils.return_density(r=np.sqrt(np.sum(x0**2,axis=1)), weights=masses, **density_params_df, smooth=True)
+rbinsf, dvalsf = DREAMS_utils.return_density(r=np.sqrt(np.sum(xf**2,axis=1)), weights=masses, **density_params_df, smooth=True)
 
 # Plot inferred density vs analytical density
 plum_dens = plum_rho(r=rbins, M=M, a=a, G=G)
@@ -267,184 +267,3 @@ axs[1].plot(rbins, plum_dens-dvals, c="r")
 axs[1].plot(rbins, plum_dens-dvalsf, c="b")
 fig.savefig(f"{output_dir}density_plot.pdf")
 
-# Construct basis
-import os
-import DREAMS_utils
-import pyEXP
-import yaml
-import k3d
-from gala.units import SimulationUnitSystem
-import astropy.units as u
-
-outputs = sorted(os.listdir(output_dir))
-outputs = [o for o in outputs if ".npz" in o]
-
-lims = 10
-
-# Load position, velocity, and masses of particles at last snapshot
-data_final = np.load(f"{output_dir}{outputs[-1]}", allow_pickle=True)
-
-logr = np.log10(np.sqrt(np.sum(data_final["x"]**2, axis=1)))
-masses = data_final["m"]
-
-# 1 - Calculate base density
-density_params_df = {"bins": 100,
-                     "rangevals": [0,np.log10(lims)]}
-
-rbins, dvals = DREAMS_utils.return_density(logr=logr, weights=masses, **density_params_df, smooth=True)
-
-# 2 - Set up basis
-# Create an EXP-compatible spherical basis function table 
-model_file = f"{output_dir}basis_empirical_PlummerTest.txt" 
-cache_file = model_file.replace(".txt",".cache.run0")
-
-# Check if model or table have already been computed
-if os.path.exists(model_file):
-    os.remove(model_file)
-if os.path.exists(cache_file):
-    os.remove(cache_file)
-
-rbins, dvals, mass, potential = DREAMS_utils.makemodel_empirical(rvals=rbins,
-                                                                 dvals=dvals,
-                                                                 pfile=model_file) 
-config = {"id" : "sphereSL",
-            "parameters": {"numr": 4000,
-                            "rmin": 1,
-                            "rmax": 100,
-                            "Lmax": 6,
-                            "nmax": 20,
-                            "rmapping": 0.067,
-                            "modelname": model_file,
-                            "cachename": model_file.replace(".txt",".cache.run0")
-                            }
-            }
-
-
-# Save yaml file for constructing gala potential
-yaml_file = f"{output_dir}basis_yaml_PlummerTest.yml"
-
-with open(yaml_file, "w") as f:
-    yaml.dump(config, f, default_flow_style=False)
-    
-    
-# Construct basis
-with open(yaml_file, "r") as f:
-    yaml_config = f.read()
-
-# Build the basis
-basis = pyEXP.basis.Basis.factory(yaml_config) 
-
-import astropy.units as u
-
-# 3 - Calculate coefficients
-
-t_outputs=[i*dt for i in range(0,nsteps+1, 20)]
-coefs_container = None
-
-for i,output_file in enumerate(outputs):
-    
-    data_file = np.load(f"{output_dir}{output_file}")
-
-    coefs = basis.createFromArray(data_file["m"], 
-                                  data_file["x"], 
-                                  time=t_outputs[i])
-    
-    if coefs_container is None:
-        coefs_container = pyEXP.coefs.Coefs.makecoefs(coefs)
-        coefs_container.add(coefs)
-    else:
-        coefs_container.add(coefs)
-        
-# Save the coefficients
-coefs_file = f"{output_dir}coefs_PlummerTest.h5"
-if os.path.exists(coefs_file):
-    os.remove(coefs_file)
-    coefs_container.WriteH5Coefs(coefs_file) 
-else:
-    coefs_container.WriteH5Coefs(coefs_file)
-    
-    
-# Build stream simulation
-from gala.units import SimulationUnitSystem
-import gala.potential as gp
-import gala.dynamics as gd
-import astropy.units as u
-from gala.dynamics import mockstream as ms
-import gala.integrate as gi
-import math 
-
-exp_units = SimulationUnitSystem(mass=10**10*u.Msun, # Can decide here how big your system is
-                                 length=10*u.kpc, # Specify what's the scale radius
-                                 G=1)
-
-pot = gp.EXPPotential(units=exp_units,
-                      config_file=yaml_file,
-                      coef_file=coefs_file,
-                      snapshot_time_unit=exp_units["time"])
-
-pot_analytical = gp.PlummerPotential(m=M,
-                                     b=a,
-                                     units=exp_units)
-
-# Orbits
-v_xyz = data_file["v"]
-x_lim = 5
-v_abs = np.sqrt(np.sum(v_xyz**2,axis=1))
-idx_list = np.random.randint(len(v_xyz), size=5)
-fig2,axs = plt.subplots(1,2, layout="constrained", sharex=True, sharey=True)
-
-pos = dict(zip(idx_list, [[] for i in range(len(idx_list))]))
-vel = dict(zip(idx_list, [[] for i in range(len(idx_list))]))
-
-for output_file in outputs:
-    
-    data_file = np.load(f"{output_dir}{output_file}")
-    for idx in idx_list:
-        x_idx = data_file["x"][idx]
-        v_idx = data_file["v"][idx]
-        pos[idx].append(x_idx)
-        vel[idx].append(v_idx)
-
-for idx in idx_list:
-    p_xyz = np.vstack(pos[idx])
-    axs[0].plot(p_xyz[:,0],p_xyz[:,1])
-    axs[1].plot(p_xyz[:,0],p_xyz[:,2])
-    
-axs[0].set_aspect(1)
-axs[1].set_aspect(1)
-axs[0].set_xlim([-x_lim,x_lim])
-axs[0].set_ylim([-x_lim,x_lim])
-fig.savefig(f"{output_dir}orbits1.pdf")
-
-for i,k in enumerate(pos.keys()):
-    
-    color = [np.random.uniform(), np.random.uniform(), np.random.uniform()]
-    orbit_xyz = np.vstack(pos[k])
-    
-    orbit_x0 = pos[k][0]*exp_units["length"]
-    orbit_v0 = vel[k][0]*exp_units["velocity"]
-    orbit_w0 = gd.PhaseSpacePosition(pos=orbit_x0,
-                                     vel=orbit_v0)
-
-    orbit_r = np.sqrt(np.sum(np.power(orbit_x0,2)))
-
-    orbit_period = 5*2*math.pi*orbit_r/pot_analytical.circular_velocity(orbit_x0)[0]
-    
-    if orbit_period.value >= max(t_outputs):
-        continue 
-
-    orbit_analytical = pot_analytical.integrate_orbit(w0=orbit_w0, 
-                                                      Integrator=gi.LeapfrogIntegrator,
-                                                      t1=0, 
-                                                      t2=orbit_period, n_steps=1000)
-
-    orbit_EXP = pot.integrate_orbit(w0=orbit_w0, 
-                                    Integrator=gi.LeapfrogIntegrator, 
-                                    t1=0, 
-                                    t2=orbit_period, n_steps=1000)
-
-    fig,ax = plt.subplots()
-    ax.plot(orbit_analytical.xyz[0], orbit_analytical.xyz[1], c=color, ls="-")
-    ax.plot(orbit_EXP.xyz[0], orbit_EXP.xyz[1], c=color, ls="--")
-    ax.scatter(orbit_xyz[:,0], orbit_xyz[:,1], c=color, marker="^")
-    fig.savefig(f"{output_dir}orbits_comp_{k}.pdf")

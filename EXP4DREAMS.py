@@ -773,8 +773,8 @@ class EXPBFE_builder():
                                  "rmapping": float(self.sim.r_scale/self.sim.r_vir),
                                  "modelname": model_file,
                                  "cachename": cache_file,
-                                 "pcavar": True,
-                                 "subsamp": 1
+                                 "pcavar": True, # enable to calculate the coefficients covariance matrix 
+                                 "subsamp": 1000,
                                  },
                   "runtag": "run0"
                  }
@@ -1052,15 +1052,17 @@ class EXPBFE_builder():
                            field: str, # dens, dens m=0, dens m>0, potl, potl m-0, ...
                            time: float,
                            extent: list, # e.g. [[xmin, ymin, 0.],[xmax, ymax, 0.]]
-                           grid: list, # [bins_x, bins_y, 0.]
+                           grid: list, # [bins_x, bins_y, 0.],
+                           ax=None,
+                           circles=False
                            ):
         
         # Initialise surface field generator
         times = coefs.Times()
     
         generator = pyEXP.field.FieldGenerator(times, 
-                                               [el.to(self.exp_units["length"]).value for el in extent[0] if el!=0], 
-                                               [el.to(self.exp_units["length"]).value for el in extent[1] if el!=0], 
+                                               [el.to(self.exp_units["length"]).value if el!=0 else 0. for el in extent[0]], 
+                                               [el.to(self.exp_units["length"]).value if el!=0 else 0. for el in extent[1]], 
                                                grid)
         
         surfaces = generator.slices(basis, coefs)
@@ -1078,11 +1080,6 @@ class EXPBFE_builder():
                         grid[non_zero_entries[1]])
         
         xv, yv = np.meshgrid(x, y)
-        
-        fig, ax = plt.subplots()
-        ax.set_xlim([min(x.value),max(x.value)])
-        ax.set_ylim([min(y.value), max(y.value)])
-        cbar_label = field
 
         if field in ["dens", "dens m=0", "dens m>0"]:
 
@@ -1099,27 +1096,37 @@ class EXPBFE_builder():
             cbar_label = "$\\Phi \\; [\\rm{km}^2 \\, \\rm{s}^{-2}]$"
 
         
+        if ax is None:
+            
+            fig, ax = plt.subplots()
+            ax.set_xlim([min(x.value),max(x.value)])
+            ax.set_ylim([min(y.value), max(y.value)])
+            cbar_label = field
+        
         cont1 = ax.contour(xv, yv, surface, colors='k')
         cont1.clabel(fontsize=9, inline=True)
         cont2 = ax.contourf(xv, yv, surface)
-        cbar = fig.colorbar(cont2)
-        cbar.set_label(cbar_label)
         
-        # Plot circles showing 10 and 100 kpc
-        for r in [10, 100]:
-            circle = patches.Circle(
-                        (0,0), # center coordinates
-                        r,  # Radius
-                        color="red",
-                        fill=False, 
-                        linewidth=2,
-                        linestyle='-'
-                    )
-            ax.add_patch(circle)
+        if ax is None:
+            cbar = fig.colorbar(cont2)
+            cbar.set_label(cbar_label)
+        
+        if circles:
+            # Plot circles showing 10 and 100 kpc
+            for r in [10, 100]:
+                circle = patches.Circle(
+                            (0,0), # center coordinates
+                            r,  # Radius
+                            color="red",
+                            fill=False, 
+                            linewidth=2,
+                            linestyle='-'
+                        )
+                ax.add_patch(circle)
             
         
 
-        return fig
+        return ax
 
     def volume_render(self,
                       basis,
@@ -1140,6 +1147,9 @@ class EXPBFE_builder():
         volumes = generator.volumes(basis, coefs)
 
         volume = volumes[time][field]
+        
+        if field=="potl":
+            volume=np.abs(volume)
 
         # Initialise plot
         plot = k3d.plot()
@@ -1148,10 +1158,9 @@ class EXPBFE_builder():
         size = [-grid_lim, grid_lim, -grid_lim, grid_lim, -grid_lim, grid_lim]
 
         volume = k3d.volume(volume.astype(np.float32), 
-                          alpha_coef=250,
+                          alpha_coef=5,
                           color_range=value_range,  
-                          color_map=(np.array(k3d.colormaps.paraview_color_maps.Blues).reshape(-1,4) 
-                          * np.array([1,1.0,1.0,1.0])).astype(np.float32), 
+                          color_map=k3d.matplotlib_color_maps.Viridis, 
                           compression_level=7)
         
         volume.transform.bounds = [-size[0], size[0], -size[1], size[1], -size[2], size[2]]
@@ -1159,6 +1168,38 @@ class EXPBFE_builder():
         plot += volume
 
         return plot
+    
+    def plot_coefs_evolution(self,
+                             coefs, 
+                             l, 
+                             m,
+                             ax):
+    
+        coefs_values = coefs.getAllCoefs()
+        times = coefs.Times()
+        
+        spherical_index = (l * (l + 1)) // 2 + m
+        n_radial_terms = coefs_values.shape[1]
+
+        cmap = mpl.colormaps["inferno"]
+        norm = mpl.colors.Normalize(vmin=0, vmax=n_radial_terms)
+        sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+
+        for n_radial in range(n_radial_terms):
+            ax.plot(times, 
+                    coefs_values[spherical_index, n_radial, :],
+                    c=cmap(norm(n_radial)))
+            
+        ax.set_yscale("log")
+        ax.set_ylabel("Coefficients amplitude")
+        ax.set_xlabel("Time")
+
+        cbar = plt.colorbar(sm, ax=ax)
+        cbar.set_label("Radial order")
+
+        ax.set_title(f"l={l}, m={m}")
+        return ax
+
   
     
 ########################################################################
