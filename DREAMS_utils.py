@@ -2,6 +2,7 @@ import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
 import h5py
 import numpy as np
+import os
 import pynbody
 import sys
 sys.path.append("/mnt/home/asante/ceph/repos/")
@@ -56,21 +57,32 @@ def load_group_data(path, keys=None):
       cat - a dictionary that contains all of the group and subhalo information for the specified keys
     """
     cat = dict()
-    file = h5py.File(path)
-    if keys is None:
-        # Load all keys:
-        keys = list(file["Group"].keys()) + list(file["Subhalo"].keys())
-    
-    for key in keys:
-        if 'Group' in key:
-            cat[key] = np.array(file[f'Group/{key}'])
-        if 'Subhalo' in key:
-            cat[key] = np.array(file[f'Subhalo/{key}'])
-    file.close()
+    fof_files = os.listdir(path)
+    fof_files.sort()
+    for file in fof_files:
+        file = h5py.File(f"{path}{file}")
+        if keys is None:
+            # Load all keys:
+            keys = list(file["Group"].keys()) + list(file["Subhalo"].keys())
+        
+        for key in keys:
+            if 'Group' in key:
+                if key in cat:
+                    cat[key] = np.concatenate([cat[key], file[f'Group/{key}']])
+                else:
+                    cat[key] = np.array(file[f'Group/{key}'])
+            if 'Subhalo' in key:
+                if key in cat:
+                    cat[key] = np.concatenate([cat[key], file[f'Subhalo/{key}']])
+                else:
+                    cat[key] = np.array(file[f'Subhalo/{key}'])
+        file.close()
     
     return cat
 
-def load_particle_data(snap_path, box, snap, part_types):
+def load_particle_data(snap_path: str, 
+                       snap: int, 
+                       part_types: int):
     """
     revised from original, will use all keys instead of passing in subset 
     Read particle data from the DREAMS simulations
@@ -91,7 +103,7 @@ def load_particle_data(snap_path, box, snap, part_types):
       cat - a dictionary that contains all of the particle information for the specified keys and particle types
     """
     
-    path = f'{snap_path}/box_{box}/snap_{snap:03}.hdf5'
+    path = f'{snap_path}/snap_{snap:03}.hdf5'
     
     cat = dict()
     with h5py.File(path) as ofile:
@@ -104,7 +116,7 @@ def load_particle_data(snap_path, box, snap, part_types):
                 keys = ofile[f'PartType{part_type}'].keys()
                 for key in keys:
                     if part_type == 1 and key == 'Masses':
-                        cat[f'PartType{part_type}/{key}'] = np.ones(ofile['PartType1/ParticleIDs'].shape)*ofile['Header'].attrs['MassTable'][1]
+                        cat[f'PartType{part_type}/{key}'] = np.ones(ofile['PartType1/Coordinates'].shape[0])*ofile['Header'].attrs['MassTable'][1]
                     else:
                         if f'PartType{part_type}/{key}' in ofile:
                             cat[f'PartType{part_type}/{key}'] = np.array(ofile[f'PartType{part_type}/{key}'])
@@ -113,11 +125,15 @@ def load_particle_data(snap_path, box, snap, part_types):
                 return
     return cat
 
-def config_pynbody_units(snap_path, box, snap):
+def config_pynbody_units(snap_path, snap):
     
     #load in to find scale factor:
-    path = f'{snap_path}/box_{box}/snap_{snap:03}.hdf5'
-    param_info = np.loadtxt(f'{snap_path}/box_{box}/aux_files/ics_config.txt',  dtype='str', skiprows=20, max_rows=6)
+    path = f'{snap_path}snap_{snap:03}.hdf5'
+    try:
+        param_info = np.loadtxt(f'{snap_path}aux_files/ics_config.txt',  dtype='str', skiprows=20, max_rows=6)
+    except FileNotFoundError:
+        print("Could not find the initial conditions file. Defaulting to the ones for box 695.")
+        param_info = np.loadtxt(f'/mnt/home/dreams/ceph/Sims/CDM/MW_zooms/SB5/box_695/aux_files/ics_config.txt',  dtype='str', skiprows=20, max_rows=6)
     
     check = h5py.File(path)
     a = 1/(check['Header'].attrs['Redshift']+1)
@@ -178,12 +194,11 @@ def config_pynbody_units(snap_path, box, snap):
 
 def get_MW_idx_at_snap(snap: int,
                        group_path: str,
-                       box: int,
                        param_dict
                        ):
     
     # Get MW-mass halo from z = 0
-    fof_path90 = f'{group_path}/box_{box}/fof_subhalo_tab_{90:03}.hdf5'
+    fof_path90 = f'{group_path}fof_subhalo_tab_{90:03}.hdf5'
     grp_cat90 = load_group_data(fof_path90)
     model = group_path.split('/')[-4]
     
@@ -196,8 +211,8 @@ def get_MW_idx_at_snap(snap: int,
     #can't use the z = 0 MW mass idx finder here - need to identify the MW-mass halo at z = 0
     #and then trace it thru time. Will need to load the merger tree to identify the correct halo
     
-    tree_cat = h5py.File(group_path+'/box_'+str(int(box))+'/tree_extended.hdf5')
-    
+    tree_cat = h5py.File(f"{group_path}tree_extended.hdf5")
+        
     mw_tree_id = tree_cat["SubhaloID"][(tree_cat["SnapNum"][:]==90) &
                                         (tree_cat["SubhaloLen"][:]==grp_cat90["SubhaloLen"][mw_idx])][0]
     subfind_idx = tree_cat["SubfindID"][tree_cat["SubhaloID"][...]==mw_tree_id][0]
@@ -220,8 +235,7 @@ def get_MW_idx_at_snap(snap: int,
 
 def load_zoom_particle_data_pynbody(snap_path: str, 
                                     group_path: str, 
-                                    box: int, 
-                                    snap: int, 
+                                    snap, 
                                     part_type: int):
     '''take in the snapshot path, the group path, the number box that you want
     the snapshot of, the snapshot number (i.e. what time, here z ~ 0 = 90), 
@@ -237,21 +251,41 @@ def load_zoom_particle_data_pynbody(snap_path: str,
 
     
     # Configure pynbody with the cosmology of the simulation
-    unit_dict, param_dict = config_pynbody_units(snap_path, box, snap)
+    unit_dict, param_dict = config_pynbody_units(snap_path, snap)
     name_map = pynbody.snapshot.namemapper.AdaptiveNameMapper('gadgethdf-name-mapping',return_all_format_names=False)
     
 
     # Load subfind information
-    fof_path = f'{group_path}/box_{box}/fof_subhalo_tab_{snap:03}.hdf5'
+    if os.path.exists(f"{group_path}fof_subhalo_tab_{snap:03}.hdf5"):
+        fof_path = group_path
+    else:
+        # Subfind table for high-cadence snapshots are saved in a different format
+        if os.path.exists(f"{group_path}groups_{snap:03}/"):
+            fof_path = f"{group_path}groups_{snap:03}/"
+        else:
+            # Find the closest snapshot
+            available_folders = [d for d in os.listdir(group_path) if d.startswith('groups_')]
+
+            # Extract the integer snapshot numbers from folder names 
+            available_snaps = [int(d.split('_')[1].replace('/', '')) for d in available_folders]
+            # Find the snapshot with the minimum absolute difference
+            closest_snap = available_snaps[np.argmin(np.abs(np.array(available_snaps) - snap))]
+            fof_path = f"{group_path}groups_{closest_snap:03}/"
+            
+            print(f"Warning: Snap {snap} not found. Using closest snapshot: {closest_snap}")
+
+    
     grp_cat = load_group_data(fof_path)
-
-
-    # Identify the index in the subfind table of the MW mass halo at this snapshot
-    mw_idx = get_MW_idx_at_snap(snap,
-                                group_path,
-                                box,
-                                param_dict,
-                                )
+    
+    if not os.path.exists(f"{group_path}tree_extended.hdf5"):
+        print("No merger tree file found for the galaxy. Taking the most massive subhalo as the MW.")
+        mw_idx = 0
+    else:
+        # Identify the index in the subfind table of the MW mass halo at this snapshot
+        mw_idx = get_MW_idx_at_snap(snap,
+                                    group_path,
+                                    param_dict,
+                                    )
     
     # If there is a larger halo, ignore the particles belonging to it
     offsets = np.sum(grp_cat['GroupLenType'][:mw_idx],axis=0)
@@ -259,7 +293,7 @@ def load_zoom_particle_data_pynbody(snap_path: str,
     num_parts = grp_cat['SubhaloLenType'][grp_cat['GroupFirstSub'][mw_idx]] 
 
     # Load all the particles in the simulation
-    dat = load_particle_data(snap_path, box, snap, [part_type])
+    dat = load_particle_data(snap_path, snap, [part_type])
     
     # Create output catalog
     if part_type==0:
@@ -267,11 +301,11 @@ def load_zoom_particle_data_pynbody(snap_path: str,
     elif part_type==1:
         out = pynbody.new(dm=int(num_parts[part_type]))
         # Masses are not stored with the other info
-        with h5py.File(f'{snap_path}/box_{box}/snap_{snap:03}.hdf5') as ofile:
-            out['Masses'] = np.ones(ofile['PartType1/ParticleIDs'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+        with h5py.File(f'{snap_path}snap_{snap:03}.hdf5') as ofile:
+            out['Masses'] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
             mapped_name = name_map('Masses', reverse=True)
             out[mapped_name].units = unit_dict['Masses']
-            out[mapped_name] = np.ones(ofile['PartType1/ParticleIDs'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+            out[mapped_name] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
     elif part_type==4:
         out = pynbody.new(star=int(num_parts[part_type]))
     
@@ -446,9 +480,9 @@ def rotate_galaxy(dat,r_max=None):
 
 
 
-def get_rotation_matrix(box: int,
-                        snap_path: str,
-                        group_path: str):
+def get_rotation_matrix(snap_path: str,
+                        group_path: str,
+                        snap_z0=90):
     """
     Returns the rotation matrix to transform the box coordinates
     such that the z-axis is aligned to the total angular momentum
@@ -458,8 +492,7 @@ def get_rotation_matrix(box: int,
     # Load star particles at z=0
     dat = load_zoom_particle_data_pynbody(snap_path, 
                                           group_path, 
-                                          box, 
-                                          90, # snap number
+                                          snap_z0, # snap number
                                           4, # PartType
                                           )
     
@@ -679,11 +712,10 @@ def makemodel(func,M,funcargs,rvals = 10.**np.linspace(-2.,4.,2000),pfile='',pla
     return rvals*rfac,dfac*dvals,mfac*mvals,pfac*pvals
 
 
-def get_cosmology(box,
-                  snap_path):
+def get_cosmology(snap_path):
 
         # Define cosmology of the simulation
-        f = h5py.File(f"{snap_path}box_{box}/snap_090.hdf5")
+        f = h5py.File(f"{snap_path}snap_090.hdf5")
 
         Om_0 = f["Header"].attrs["Omega0"]
         H0 = f["Header"].attrs["HubbleParam"]*100 * u.km / u.s / u.Mpc

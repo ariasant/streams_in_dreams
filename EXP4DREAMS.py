@@ -3,6 +3,7 @@ sys.path.append("/mnt/home/asante/ceph/streams_in_dreams")
 
 import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
+from astropy.cosmology import Planck15 as cosmo
 import math
 import numpy as np
 import os
@@ -19,10 +20,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
-
-
-
-import os
+from scipy.spatial import cKDTree
 
 
 
@@ -30,36 +28,37 @@ import os
 class DREAMSMW():
 
     def __init__(self, 
-                 box: int,
                  snap_path: str,
                  group_path: str):
         
-        self.__box__ = box
         self.__snap_path__ = snap_path
         self.__group_path__ = group_path
+        
+        # Find snapshot number corresponding to z=0
+        snapshots = get_snapshot_files(snap_path=self.__snap_path__)
+        self.snap_z0 = int(snapshots[-1].replace("snap_","").replace(".hdf5",""))
 
         ## Set coordinates frame of reference
-        self.rotation_matrix = DREAMS_utils.get_rotation_matrix(box=self.__box__,
-                                                                snap_path=self.__snap_path__,
-                                                                group_path=self.__group_path__)
+        self.rotation_matrix = DREAMS_utils.get_rotation_matrix(snap_path=self.__snap_path__,
+                                                                group_path=self.__group_path__,
+                                                                snap_z0=self.snap_z0)
         
         ## Define the cosmology of the simulation
-        self.cosmo = DREAMS_utils.get_cosmology(box=box,
-                                                snap_path=self.__snap_path__)
+        self.cosmo = DREAMS_utils.get_cosmology(snap_path=self.__snap_path__)
         
         # Calculate characteristic scales of the galaxy
-        self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=90)
+        self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=self.snap_z0)
         
-        dat = self.__load_part_data__(snap=90, PartType=4)
-        disc_star_ids = self.select_disc_stars(dat, 
+        dat = self.__load_part_data__(snap=self.snap_z0, PartType=4)
+        disc_star_idx = self.select_disc_stars(dat, 
                                                k_threshold=0.7, 
                                                r_max=30,
                                                z_max=10)
-        disc_dat = dat[np.isin(dat["iord"], disc_star_ids)]
+        disc_dat = dat[disc_star_idx]
         self.r_scale_disc = self.__fit_scale_radius__(disc_dat)
         self.z_scale_disc = self.__fit_scale_height__(disc_dat)
         
-        print(f"""Galaxy {box}:\r
+        print(f"""
                Scale Radius (DM): \t\t{self.r_scale:.1f} kpc\r
                Virial Radius: \t\t{self.r_vir:.1f} kpc\r
                Virial Mass: \t\t{self.M_vir:.1g} M_sun\r
@@ -77,7 +76,6 @@ class DREAMSMW():
         # Get raw simulation data
         dat = DREAMS_utils.load_zoom_particle_data_pynbody(self.__snap_path__, 
                                                            self.__group_path__, 
-                                                           self.__box__, 
                                                            snap, 
                                                            PartType
                                                            )
@@ -118,9 +116,11 @@ class DREAMSMW():
         K_rot = dat['vtheta']**2
         
         # Optionally also based on distance to centre of the galaxy
-        disc_stars_ids = dat["iord"][(K_rot/K_tot>k_threshold) & (dat["r"]<r_max) & (dat["z"]**2<z_max**2)]
+        disc_stars_idx = np.logical_and.reduce([(K_rot/K_tot>k_threshold),
+                                                (dat["r"]<r_max),
+                                                (dat["z"]**2<z_max**2)])
         
-        return disc_stars_ids
+        return disc_stars_idx
     
     
 
@@ -134,13 +134,12 @@ class DREAMSMW():
         for snap in snapshots:
 
             # Read age of the universe at snapshot
-            f = h5py.File(f"{self.__snap_path__}box_{self.__box__}/snap_{snap:03}.hdf5")
+            f = h5py.File(f"{self.__snap_path__}snap_{snap:03}.hdf5")
             times.append(self.cosmo.age(f["Header"].attrs["Redshift"]).value)
 
             # Get raw simulation data
             dat, grp_dat = DREAMS_utils.load_zoom_particle_data_pynbody(self.__snap_path__, 
                                                                         self.__group_path__, 
-                                                                        self.__box__, 
                                                                         snap, 
                                                                         4, # stars
                                                                         )
@@ -239,7 +238,7 @@ class DREAMSMW():
     def __get_cosmology__(self):
 
         # Define cosmology of the simulation
-        f = h5py.File(f"{self.__snap_path__}box_{self.__box__}/snap_090.hdf5")
+        f = h5py.File(f"{self.__snap_path__}snap_{self.snap_z0:03}.hdf5")
 
         Om_0 = f["Header"].attrs["Omega0"]
         H0 = f["Header"].attrs["HubbleParam"]*100 * u.km / u.s / u.Mpc
@@ -271,7 +270,7 @@ class DREAMSMW():
         dat = self.__load_part_data__(snap=snap, PartType=1)
 
         # Calculate critical density of the universe at snap
-        f = h5py.File(f"{self.__snap_path__}box_{self.__box__}/snap_{snap:03}.hdf5")
+        f = h5py.File(f"{self.__snap_path__}snap_{snap:03}.hdf5")
         z = f["Header"].attrs["Redshift"]
         rho_crit = self.cosmo.critical_density(z).to(u.Msun/u.kpc**3).value
 
@@ -321,11 +320,10 @@ class DREAMSMW():
         return z_s
         
 
-
     def track_particles(self,
                         particleIDs: np.array,
                         PartType: int,
-                        snapshots: list[int]):
+                        z_range: list[float]):
         
         # Save position and velocity of the particles at different snapshots
         out = {}
@@ -333,6 +331,7 @@ class DREAMSMW():
         flagged_particles = []
         
         # Load all the particles bound to the MW at different snapshots
+        snapshots = convert_zrange_to_snapshots(z_range, self.__snap_path__)
         particles_list = [self.__load_part_data__(snap=snap,
                                                   PartType=PartType) for snap in snapshots]
         
@@ -378,7 +377,7 @@ class DREAMSMW():
     def plot_subhalos_tracks(self):
 
         # Load merger tree
-        tree = h5py.File(f"{self.__group_path__}/box_{self.__box__}/tree_extended.hdf5")
+        tree = h5py.File(f"{self.__group_path__}tree_extended.hdf5")
 
         # Initialise plot
         fig,axs = plt.subplots(1,2, layout="constrained")
@@ -422,7 +421,7 @@ class DREAMSMW():
                     positions.append(pos)
                 except KeyError:
                     continue
-                if snap==90:
+                if snap==self.snap_z0:
                     axs[0].scatter(pos[0], pos[1], c="k", s=1)
                     axs[1].scatter(pos[0], pos[2], c="k", s=1)
 
@@ -454,200 +453,116 @@ class DREAMSMW():
 
 
         return fig
-class DREAMSMW_high_cadence(DREAMSMW):
-
-    def __init__(self, 
-                 snap_path: str):
-        
-        self.__snap_path__ = snap_path
-        # Get list of snapshot files from earliest to latest
-        self.snapshot_files = self.__get_snapshot_files__()
-        
-        # Set coordinates frame of reference
-        dat = self.__load_part_data__(snap=self.snapshot_files[-1],
-                                      PartType=4,
-                                      rotate=False)
-        _, self.rotation_matrix = DREAMS_utils.rotate_galaxy(dat=dat) 
-        
-        # Define cosmology of the simulation
-        f = h5py.File(f"{snap_path}{self.snapshot_files[-1]}")
-        Om_0 = f["Header"].attrs["Omega0"]
-        H0 = f["Header"].attrs["HubbleParam"]*100 
-        self.cosmo = FlatLambdaCDM(H0=H0, Om0=Om_0)
-        
-        # Get Fit NFW profile to galaxy
-        self.r_scale, self.r_vir, self.M_vir = self.__fit_nfw__(snap=self.snapshot_files[-1])
-        
-        dat = self.__load_part_data__(snap=self.snapshot_files[-1], PartType=4)
-        disc_star_ids = self.select_disc_stars(dat, 
-                                               k_threshold=0.7, 
-                                               r_max=30,
-                                               z_max=10)
-        disc_dat = dat[np.isin(dat["iord"], disc_star_ids)]
-        self.r_scale_disc = self.__fit_scale_radius__(disc_dat)
-        self.z_scale_disc = self.__fit_scale_height__(disc_dat)
-        
-        print(f"""High-cadence snpashots Galaxy:\r
-               Scale Radius (DM): \t\t{self.r_scale:.1f} kpc\r
-               Virial Radius: \t\t{self.r_vir:.1f} kpc\r
-               Virial Mass: \t\t{self.M_vir:.1g} M_sun\r
-               Disc Scale Radius: \t\t{self.r_scale_disc:.1f} kpc\r
-               Disc Scale Height: \t\t{self.z_scale_disc:.1f} kpc
-               """)
-        
-    def __get_snapshot_files__(self):
-        
-        # Get all the .hdf5 files in the directory
-        outputs = os.listdir(snap_path)
-        outputs = [out for out in outputs if ".hdf5" in out]
-        
-        # Order files by snapshot
-        n_outputs = sorted([int(out.replace("snap_","").replace(".hdf5","")) for out in outputs])
-        ordered_outputs = [f"snap_{n}.hdf5" for n in n_outputs]
-        
-        return ordered_outputs
-    
-    # Overwrite the function to load the data from the simulation
-    def __load_part_data__(self, 
-                           snap, 
-                           PartType, 
-                           rotate = True):
-        
-        # Load particle data
-        f = h5py.File(f"{snap_path}{snap}")
-        
-        
-        # Create pynbody simulation object
-        N = int(f["Header"].attrs["NumPart_Total"][PartType])
-        if PartType==0:
-            dat = pynbody.new(gas=N)
-        elif PartType==1:
-            dat = pynbody.new(dark=N)
-        elif PartType==4:
-            dat = pynbody.new(star=N)
-        else:
-            raise ValueError("Only gas (0), dark matter (1), ad star (4) PartTypes are supported")
-        
-        
-        # Define simulation units
-        a = float(f["Header"].attrs["Time"])
-        pynbody.config['omegaM0'] = float(f["Header"].attrs["Omega0"])
-        pynbody.config['omegaL0'] = float(f["Header"].attrs["OmegaLambda"])
-        pynbody.config['h'] = float(f["Header"].attrs["HubbleParam"]) #should be .6909, but file gives 69.09
-        pynbody.config['omegaB0'] = float(f["Header"].attrs["OmegaBaryon"])
-        pynbody.config['a'] = a
-        pynbody.units.a = a
-        pynbody.units.h = float(f["Header"].attrs["HubbleParam"])
-        
-        unit_dict = {'BirthPos': units.kpc * units.h**-1,
-            'BirthVel': units.a**1/2 * units.km * units.s**-1,
-            'Coordinates': units.kpc *units.a * units.h**-1,
-            'GFM_InitialMass': 1e10 * units.Msol * units.h**-1,
-            'GFM_Metallicity': units.Unit(1),
-            'GFM_Metals': units.Unit(1),
-            'GFM_MetalsTagged': units.Unit(1),
-            'GFM_StellarFormationTime': units.Unit(1),
-            'GFM_StellarPhotometrics': units.Unit(1),
-            'Masses': 1e10 * units.Msol * units.h**-1,
-            'ParticleIDs': units.Unit(1),
-            'Potential': units.km**2 * units.s**-2 * units.a**-1,
-            'SubfindDMDensity': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
-            'SubfindDensity': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
-            'SubfindHsml': units.kpc * units.a * units.h**-1,
-            'SubfindVelDisp': units.km * units.s**-1,
-            'Velocities': units.km * units.a**1/2 * units.s**-1,
-            'CenterOfMass': units.kpc * units.a * units.h**-1,
-            'Density': 1e10 * units.Msol * units.h**2 * units.kpc**-3*units.a**-3,
-            'ElectronAbundance': units.Unit(1),
-            'GFM_AGNRadiation': units.erg * units.s**-1 * units.cm**-2 * 4 * np.pi,
-            'GFM_CoolingRate': units.erg * units.s**-1 * units.cm**3,
-            'GFM_Metallicity': units.Unit(1),
-            'GFM_Metals': units.Unit(1),
-            'GFM_MetalsTagged': units.Unit(1),
-            'GFM_WindDMVelDisp': units.km * units.s**-1,
-            'GFM_WindHostHaloMass': 1e10 * units.Msol * units.h**-1,
-            'InternalEnergy': units.km**2 * units.s**-2,
-            'MagneticField': units.h * units.a**-2 * 1e5 * units.Msol**1/2 * units.kpc**-1/2* units.km * units.s**-1 * units.kpc**-1,
-            'MagneticFieldDivergence': units.h**3 * 1e5 * units.Msol**1/2 * units.km * units.a**-2 * units.s**-1 * units.kpc**-5/2 * units.a**-5/2,
-            'NeutralHydrogenAbundance': units.Unit(1),
-            'StarFormationRate': units.Msol * units.yr**-1,
-            'InternalEnergy': units.km**2 * units.s**-2,
-            'AllowRefinement': units.Unit(1),
-            'HighResGasMass': units.Unit(1)}
-
-        
-        # Create dictionary to map variable names from Illustris outputs to pynbody
-        name_map = pynbody.snapshot.namemapper.AdaptiveNameMapper('gadgethdf-name-mapping',return_all_format_names=False)
-        
-        # Assign units to each field in the data object
-        for key in f[f"PartType{PartType}"].keys():
-            mapped_name = name_map(key, reverse=True)
-            dat[mapped_name] = f[f"PartType{PartType}/{key}"]
-            dat[mapped_name].units = unit_dict[key]
-        
-        # Convert to physical units
-        dat.physical_units()
-        
-        # Center the halo using the shrink sphere center method
-        pynbody.analysis.center(dat, 
-                                mode='ssc',
-                                with_velocity=True, # Correct for the motion of the center of mass of the halo
-                                cen_size="5 kpc")
-        
-        if rotate:
-            # Rotate to align total angular momentum vector to z-axis
-            r_sim = np.stack([dat["x"], dat["y"], dat["z"]])
-            v_sim = np.stack([dat["vx"], dat["vy"], dat["vz"]])
-            # Apply rotation
-            r_rot = self.rotation_matrix @ r_sim
-            v_rot = self.rotation_matrix @ v_sim
-
-            for i,xi in enumerate(["x","y","z"]):
-                dat[f"{xi}"] = r_rot[i]
-                dat[f"v{xi}"] = v_rot[i]
-        
-        return dat
-    
-    def __fit_nfw__(self, snap: str):
-
-        # Load particles 
-        dat = self.__load_part_data__(snap=snap, PartType=1)
-
-        # Calculate density profile of the DM halo
-        rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
-                                                   weights=dat["mass"], 
-                                                   bins=100,
-                                                   rangevals=[1,300],
-                                                   smooth=True)
-        
-        # Calculate critical density of the universe at snap
-        f = h5py.File(f"{self.__snap_path__}{self.snapshot_files[-1]}")
-        z = f["Header"].attrs["Redshift"]
-        rho_crit = self.cosmo.critical_density(z).to(u.Msun/u.kpc**3).value
-        
-        # Fit NFW profile to the density profile
-        popt, pcov = curve_fit(lambda rbins, c, r_vir: self.__NFW_profile__(rbins, rho_crit, c, r_vir),
-                       rbins, dvals/max(dvals),
-                       bounds=([1e-5, 1e-5], [100, 400]),
-                       maxfev=1000
-                       )
-        
-        r_scale = popt[1]/popt[0]
-        r_vir = popt[1]
-        M_vir = np.sum(dat["mass"][dat["r"]<r_vir])
-
-        return r_scale, r_vir, M_vir
     
 
-    def __NFW_profile__(self, r, rho_crit, c, r_vir):
-        
-        delta = 200/3 * c**3 / (np.log(1+c) - c/(1+c))
-        
-        x = r/(r_vir/c)
-        
-        d = rho_crit*delta / (x * (1+x)**2)
 
-        return  d/max(d)
+
+    def track_particles(self,
+                        n_particles: int,
+                        PartType: int,
+                        z_range: list[float]):
+        """
+        Tracks n_particles randomly selected from the last snapshot backwards in time.
+        """
+        
+        # 1. Load all snapshots
+        # We assume this returns a list of data dictionaries ordered by time (earliest -> latest)
+        snapshots = convert_zrange_to_snapshots(z_range, self.__snap_path__)
+        particles_list = [self.__load_part_data__(snap=snap, PartType=PartType) for snap in snapshots]
+
+        # 2. Initialization: Start from the LAST snapshot (t_final / z=0)
+        curr_snap_idx = len(snapshots) - 1
+        curr_data = particles_list[curr_snap_idx]
+
+        # --- Randomly Select Particles ---
+        # Get total number of particles in this snapshot
+        total_particles = len(curr_data["x"])
+        
+        # Randomly choose indices without replacement
+        rng = np.random.default_rng(1)
+        rand_indices = rng.choice(total_particles, size=n_particles, replace=False)
+        
+        # Use the indeces as keys for the output dict
+        tracked_pids = rand_indices
+
+        # Initialize Output Container
+        # Structure: {pid: {'xyz': [list], 'v_xyz': [list]}}
+        out = {pid: {"xyz": [], "v_xyz": []} for pid in tracked_pids}
+
+        # Extract initial state vectors (at t_final)
+        # Shape: (N_sample, 3)
+        curr_pos = np.array([curr_data[f][rand_indices] for f in ["x", "y", "z"]]).T * u.kpc
+        curr_vel = np.array([curr_data[f][rand_indices] for f in ["vx", "vy", "vz"]]).T * (u.km/u.s)
+
+        # Store initial data
+        for i, pid in enumerate(tracked_pids):
+            out[pid]["xyz"].append(curr_pos[i])
+            out[pid]["v_xyz"].append(curr_vel[i])
+
+        # 3. Iterate Backwards
+        # Loop from the last snapshot index down to 1
+        for i in range(len(snapshots) - 1, 0, -1):
+            
+            snap_now = particles_list[i]
+            snap_prev = particles_list[i-1]
+            
+            # --- A. Time Conversion (z -> Age of Universe) ---
+            # Look for redshift in the dictionary keys (assuming 'redshift' or 'z')
+            z_now = get_z_from_snapnum(self.__snap_path__+f"snap_{snap_now:03}.hdf5")
+            z_prev = get_z_from_snapnum(self.__snap_path__+f"snap_{snap_prev:03}.hdf5")
+            
+            if z_now is None or z_prev is None:
+                raise ValueError(f"Snapshot data at index {i} or {i-1} is missing 'redshift' key.")
+
+            # Calculate Lookback Time / Age
+            # cosmo.age(z) returns the age of the universe at that redshift in Gyr
+            t_now = cosmo.age(z_now)
+            t_prev = cosmo.age(z_prev)
+            
+            # dt is the time difference between snapshots
+            dt = (t_now - t_prev).to(u.s)
+            
+            # --- B. Predict Position at t_prev ---
+            # Formula: r_prev_pred = r_now - v_now * dt
+            # Convert velocity * time to Distance units (kpc)
+            dist_change = (curr_vel * dt).to(u.kpc)
+            pred_pos = curr_pos - dist_change
+            
+            # --- C. Find Matches in Previous Snapshot ---
+            # Prepare data for KDTree (magnitude only, no units)
+            prev_all_pos = np.array([snap_prev[f] for f in ["x", "y", "z"]]).T 
+            pred_pos_val = pred_pos.to_value(u.kpc)
+            
+            # Build Tree on the previous snapshot
+            tree = cKDTree(prev_all_pos)
+            
+            # Query: Find the nearest neighbor for every predicted particle position
+            _, matched_indices = tree.query(pred_pos_val, k=1)
+            
+            # --- D. Update Current State ---
+            # Update vectors to the actual data found in the previous snapshot
+            curr_pos = np.array([snap_prev[f][matched_indices] for f in ["x", "y", "z"]]).T * u.kpc
+            curr_vel = np.array([snap_prev[f][matched_indices] for f in ["vx", "vy", "vz"]]).T * (u.km/u.s)
+            
+            # --- E. Store Data ---
+            for k, pid in enumerate(tracked_pids):
+                out[pid]["xyz"].append(curr_pos[k])
+                out[pid]["v_xyz"].append(curr_vel[k])
+
+        # 4. Format Output (Reverse to Chronological Order)
+        # The loop stored data [t_final, t_final-1, ... t_start]
+        # We want [t_start, ... t_final]
+        for pid in tracked_pids:
+            # Stack into (N_snaps, 3) arrays and reverse
+            out[pid]["xyz"] = np.vstack(out[pid]["xyz"][::-1])
+            out[pid]["v_xyz"] = np.vstack(out[pid]["v_xyz"][::-1])
+            
+        return out   
+    
+    
+    
+    
+
   
 class EXPBFE_builder():
 
@@ -655,13 +570,15 @@ class EXPBFE_builder():
                  sim,
                  basis_params_dict: dict,
                  density_dict: dict,
-                 snapshots: list, # can be int or str depending if it isn't or is highcadence
+                 z_range: list[float], # can be int or str depending if it isn't or is highcadence
                  output_dir: str,
                  high_cadence: bool=False):
         
         self.sim = sim
         self.__output_dir__ = output_dir
-        self.snapshots = snapshots
+        self.snapshots = convert_zrange_to_snapshots(z_range, self.sim.__snap_path__)
+        # Print first and last snapshot to check
+        print(f"Snapshots used for the expansion: {self.snapshots[0]} to {self.snapshots[-1]}")
         
         # Define units of the simulation
         self.exp_units = SimulationUnitSystem(mass=self.sim.M_vir*u.Msun, 
@@ -674,16 +591,10 @@ class EXPBFE_builder():
         self.coefs_files_dict = {} # Coefficients
         
         for PartType in basis_params_dict.keys():
-            if not high_cadence:
-                self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}_box_{self.sim.__box__:04}.txt" 
-                self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}_box_{self.sim.__box__:04}.yml"
-                self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}_box_{self.sim.__box__:04}.h5"
-                
             
-            else:
-                self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}_highcadence.txt" 
-                self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}_highcadence.yml"
-                self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}_highcadence.h5"
+            self.model_files_dict[PartType] = f"{self.__output_dir__}basis_empirical_PartType{PartType}.txt" 
+            self.basis_files_dict[PartType] = f"{self.__output_dir__}basis_yaml_PartType{PartType}.yml"
+            self.coefs_files_dict[PartType] = f"{self.__output_dir__}coefs_PartType{PartType}.h5"
                 
         
         # Build basis
@@ -696,11 +607,11 @@ class EXPBFE_builder():
             self.basis[PartType] = basis
             
         # Calculate the coefficients 
-        print(f"Calculating the coefficients at snapshots: {snapshots}", flush=True)
+        print(f"Calculating the coefficients at snapshots: {self.snapshots}", flush=True)
         self.coefs = {}
         for PartType, basis in self.basis.items():
             self.coefs[PartType] = self.__get_coefs__(basis=basis,
-                                                      snapshots=snapshots,
+                                                      snapshots=self.snapshots,
                                                       PartType=PartType)
             
     
@@ -855,10 +766,7 @@ class EXPBFE_builder():
 
 
             # Read age of the universe at snapshot
-            try:
-                f = h5py.File(f"{self.sim.__snap_path__}box_{self.sim.__box__}/snap_{snap:03}.hdf5")
-            except AttributeError:
-                f = h5py.File(f"{self.sim.__snap_path__}{snap}")
+            f = h5py.File(f"{self.sim.__snap_path__}snap_{snap:03}.hdf5")
                 
             z = f["Header"].attrs["Redshift"]
             t = self.sim.cosmo.age(z).value                                                           
@@ -932,7 +840,7 @@ class EXPBFE_builder():
 
     def plot_density_profile(self):
         
-        dat = self.sim.__load_part_data__(snap=90, PartType=1)
+        dat = self.sim.__load_part_data__(snap=self.snapshots[-1], PartType=1)
         rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
                                                    weights=dat["mass"], 
                                                    bins=100,
@@ -1325,9 +1233,93 @@ def plot_acceleration_field_xz(pot,
     return fig,axs
                         
                             
+
+
+
+
+
+def convert_zrange_to_snapshots(z_range, snap_path):
+    """
+    Finds all snapshots within a given redshift range [z_min, z_max].
+    Optimized to read file headers only once.
+    """
+    print("Indexing snapshot directory...", flush=True)
     
-
-
-
-
+    # 1. Get all .hdf5 files and sort them by snapshot number immediately
+    # This prevents 'os.listdir' from returning arbitrary order
+    files = [f for f in os.listdir(snap_path) if f.startswith('snap_') and f.endswith('.hdf5')]
     
+    # Sort by the integer number in the filename (e.g., snap_002.hdf5 -> 2)
+    files.sort(key=lambda x: int(x.split('_')[1].split('.')[0]))
+
+    if not files:
+        raise FileNotFoundError(f"No 'snap_*.hdf5' files found in {snap_path}")
+
+    # 2. Single I/O Pass: Build the redshift map
+    snap_nums = []
+    redshifts = []
+
+    for f_name in files:
+        # Construct full path
+        full_path = os.path.join(snap_path, f_name)
+        
+        try:
+            with h5py.File(full_path, "r") as f:
+                # Read redshift from header
+                z = f['Header'].attrs['Redshift']
+                
+                # Extract snapshot number from filename
+                n = int(f_name.split('_')[1].split('.')[0])
+                
+                snap_nums.append(n)
+                redshifts.append(z)
+        except (OSError, KeyError):
+            # Skip corrupted files or files locked by other processes
+            print(f"Warning: Could not read {f_name}")
+            continue
+
+    snap_nums = np.array(snap_nums)
+    redshifts = np.array(redshifts)
+
+    # 3. Vectorized Search
+    # Find indices of the snapshots closest to the requested z_range
+    # We use np.abs().argmin() to find the nearest match in the array
+    idx_z0 = np.argmin(np.abs(redshifts - z_range[0]))
+    idx_z1 = np.argmin(np.abs(redshifts - z_range[1]))
+
+    # Check precision (optional warning)
+    if np.abs(redshifts[idx_z0] - z_range[0]) > 0.1:
+        print(f"Warning: Closest snapshot for z={z_range[0]} is z={redshifts[idx_z0]:.2f}")
+
+    # 4. Slice the range
+    # Ensure we slice from low index to high index, regardless of z-direction
+    start, end = sorted([idx_z0, idx_z1])
+    
+    # Inclusive slicing
+    selected_snaps = snap_nums[start : end + 1]
+    
+    print(f"Found {len(selected_snaps)} snapshots in range {z_range} "
+          f"(Snap {selected_snaps[0]} to {selected_snaps[-1]})")
+    
+    return selected_snaps.tolist()
+
+
+def get_snapshot_files(snap_path):
+        
+    # Get all the .hdf5 files in the directory
+    outputs = os.listdir(snap_path)
+    outputs = [out for out in outputs if ".hdf5" in out]
+    
+    # Order files by snapshot
+    n_outputs = sorted([int(out.replace("snap_","").replace(".hdf5","")) for out in outputs])
+    ordered_outputs = [f"snap_{n}.hdf5" for n in n_outputs]
+    
+    return ordered_outputs
+
+
+def get_z_from_snapnum(snapshot_file):
+    
+    with h5py.File(snapshot_file,"r") as f:
+        z = f['Header'].attrs['Redshift']
+        
+    return z
