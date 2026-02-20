@@ -3,7 +3,6 @@ sys.path.append("/mnt/home/asante/ceph/streams_in_dreams")
 
 import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
-from astropy.cosmology import Planck15 as cosmo
 import math
 import numpy as np
 import os
@@ -36,7 +35,7 @@ class DREAMSMW():
         
         # Find snapshot number corresponding to z=0
         snapshots = get_snapshot_files(snap_path=self.__snap_path__)
-        self.snap_z0 = int(snapshots[-1].replace("snap_","").replace(".hdf5",""))
+        self.snap_z0 = int(snapshots[-1].split("_")[1])
 
         ## Set coordinates frame of reference
         self.rotation_matrix = DREAMS_utils.get_rotation_matrix(snap_path=self.__snap_path__,
@@ -70,11 +69,15 @@ class DREAMSMW():
                            snap: int, 
                            PartType: int,
                            rotate: bool = True,
+                           r_cut: bool = True,
+                           snap_path = None
                            ):
-    
+        
+        if snap_path is None:
+            snap_path = self.__snap_path__    
 
         # Get raw simulation data
-        dat = DREAMS_utils.load_zoom_particle_data_pynbody(self.__snap_path__, 
+        dat = DREAMS_utils.load_zoom_particle_data_pynbody(snap_path, 
                                                            self.__group_path__, 
                                                            snap, 
                                                            PartType
@@ -91,7 +94,10 @@ class DREAMSMW():
             for i,xi in enumerate(["x","y","z"]):
                 dat[f"{xi}"] = r_rot[i]
                 dat[f"v{xi}"] = v_rot[i]
-
+                
+        if r_cut:
+            # Exclude all particles outside the empirically determined virial radius at z=0
+            dat = dat[dat["r"]<=self.r_vir]
 
         return dat
     
@@ -267,11 +273,15 @@ class DREAMSMW():
     def __fit_nfw__(self, snap: int):
 
         # Load particles from z=0 snapshot
-        dat = self.__load_part_data__(snap=snap, PartType=1)
+        dat = self.__load_part_data__(snap=snap, PartType=1, r_cut=False)
 
         # Calculate critical density of the universe at snap
-        f = h5py.File(f"{self.__snap_path__}snap_{snap:03}.hdf5")
+        if os.path.exists(f"{self.__snap_path__}snap_{snap:03}.hdf5"):
+            f = h5py.File(f"{self.__snap_path__}snap_{snap:03}.hdf5")
+        else:
+            f = h5py.File(os.path.join(self.__snap_path__,f"snapdir_{snap}/snap_{snap:03}.0.hdf5"))
         z = f["Header"].attrs["Redshift"]
+        f.close()
         rho_crit = self.cosmo.critical_density(z).to(u.Msun/u.kpc**3).value
 
         # Calculate density profile of the DM halo
@@ -318,60 +328,6 @@ class DREAMSMW():
         z_s = DREAMS_utils.get_scale_factor(zbins, dvals_z, dvals_z[0])
         
         return z_s
-        
-
-    def track_particles(self,
-                        particleIDs: np.array,
-                        PartType: int,
-                        z_range: list[float]):
-        
-        # Save position and velocity of the particles at different snapshots
-        out = {}
-        # List to put IDs of particles not found in any snapshot
-        flagged_particles = []
-        
-        # Load all the particles bound to the MW at different snapshots
-        snapshots = convert_zrange_to_snapshots(z_range, self.__snap_path__)
-        particles_list = [self.__load_part_data__(snap=snap,
-                                                  PartType=PartType) for snap in snapshots]
-        
-        for pid in particleIDs:    
-            
-            xyz_list, v_xyz_list, E_list = [], [], []
-        
-            for snap in snapshots:
-                
-                # Load particles bound to the MW halo at snapshot
-                particles = particles_list[snapshots.index(snap)]
-                
-                #Check if particle is in the snapshot
-                idx = np.isin(particles["iord"],pid)
-                if np.sum(idx)==0:
-                    # Particle not found in this snapshot
-                    flagged_particles.append(pid)
-                    continue
-            
-                xyz = np.array([particles[idx][f] for f in ["x", "y","z"]])*u.kpc
-                v_xyz = np.array([particles[idx][f] for f in ["vx", "vy","vz"]])*(u.km/u.s)
-                
-                # Calculate the total energy of the particle
-                E = particles[idx]["phi"] + 0.5*np.sum(v_xyz**2)
-                
-                xyz_list.append(xyz)
-                v_xyz_list.append(v_xyz)
-                E_list.append(E)
-                
-                
-            out[pid] = {"xyz": np.hstack(xyz_list),
-                        "v_xyz": np.hstack(v_xyz_list),
-                        "E": np.hstack(E_list)
-                        }
-            
-        # Remove flagged particles
-        for pid in flagged_particles:
-            _ = out.pop(pid, None)
-            
-        return out
 
     
     def plot_subhalos_tracks(self):
@@ -454,110 +410,338 @@ class DREAMSMW():
 
         return fig
     
-
-
-
-    def track_particles(self,
-                        n_particles: int,
+    
+    """def track_particles(self,
+                        particleIDs: np.array,
                         PartType: int,
-                        z_range: list[float]):
-        """
-        Tracks n_particles randomly selected from the last snapshot backwards in time.
-        """
+                        z_range=None,
+                        snap_path=None):
         
-        # 1. Load all snapshots
-        # We assume this returns a list of data dictionaries ordered by time (earliest -> latest)
+        # Save position and velocity of the particles at different snapshots
+        out = {}
+        # List to put IDs of particles not found in any snapshot
+        flagged_particles = []
+        
+        # Load all the particles bound to the MW at different snapshots
         snapshots = convert_zrange_to_snapshots(z_range, self.__snap_path__)
-        particles_list = [self.__load_part_data__(snap=snap, PartType=PartType) for snap in snapshots]
-
-        # 2. Initialization: Start from the LAST snapshot (t_final / z=0)
-        curr_snap_idx = len(snapshots) - 1
-        curr_data = particles_list[curr_snap_idx]
-
-        # --- Randomly Select Particles ---
-        # Get total number of particles in this snapshot
-        total_particles = len(curr_data["x"])
+        snapshots = [s for s in range(snapshots[0], snapshots[-1]+1)]
         
-        # Randomly choose indices without replacement
-        rng = np.random.default_rng(1)
-        rand_indices = rng.choice(total_particles, size=n_particles, replace=False)
+        particles_list = []
+        for snap in snapshots:
+            try:
+                particles_list.append(self.__load_part_data__(snap=snap,
+                                                              snap_path=snap_path,
+                                                              PartType=PartType))
+            except FileNotFoundError or KeyError:
+                try:
+                    particles_list.append(self.__load_part_data__(snap=snap,
+                                                                snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/",
+                                                                PartType=PartType))
+                except FileNotFoundError:
+                    particles_list.append(0)
         
-        # Use the indeces as keys for the output dict
-        tracked_pids = rand_indices
+        # Remove absent snapshot numbers
+        particles_list = [p for p in particles_list if type(p)!=int]
+        snapshots = [snap for snap, p in zip(snapshots, particles_list) if type(p)!=int]
+        redshifts = [p["Redshift"][0] for p in particles_list if type(p)!=int]
+                
+                
+        # Ensure all particles exists at the first snapshot
+        for pid in particleIDs:
+            idx = np.isin(particles_list[0]["iord"],pid)
+            if np.sum(idx)==0:
+                # Particle not found in this snapshot
+                flagged_particles.append(pid)
+        # Remove flagged particles
+        for pid in flagged_particles:
+            _ = out.pop(pid, None)
+    
+                
+        
+        for pid in particleIDs:    
+            
+            xyz_list, v_xyz_list, m_list = [], [], []
+        
+            for snap in snapshots:
+                
+                # Load particles bound to the MW halo at snapshot
+                particles = particles_list[snapshots.index(snap)]
+                
+                #Check if particle ID is provided
+                if "iord" in particles.keys():
+                    # Read in the position and velocity data of the particle
+                    idx = np.isin(particles["iord"],pid)
+                    xyz = np.array([particles[idx][f] for f in ["x", "y","z"]])*u.kpc
+                    v_xyz = np.array([particles[idx][f] for f in ["vx", "vy","vz"]])*(u.km/u.s)
+                
+                    xyz_list.append(xyz)
+                    v_xyz_list.append(v_xyz)
+                    m_list.append(particles[idx]["mass"])
+                    
+                else:
+                    # Infer the position and velocity of the particle
+                    prev_pos = xyz_list[snapshots.index(snap)-1]
+                    prev_vel = v_xyz_list[snapshots.index(snap)-1]
+                    prev_masses = m_list[snapshots.index(snap)-1]
+                    
+                    curr_all_pos = np.array([particles[f] for f in ["x", "y","z"]])
+                    curr_all_vel = np.array([particles[f] for f in ["vx", "vy","vz"]])
+                    curr_all_masses = particles["mass"]
+                    
+                    # Get time difference between snapshots
+                    prev_t = self.cosmo.age(redshifts[snapshots.index(snap)-1])
+                    curr_t = self.cosmo.age(redshifts[snapshots.index(snap)])
 
-        # Initialize Output Container
-        # Structure: {pid: {'xyz': [list], 'v_xyz': [list]}}
-        out = {pid: {"xyz": [], "v_xyz": []} for pid in tracked_pids}
+                    dt = (curr_t - prev_t).to(u.s)
+            
+                    # Predict Position at current t
+                    pred_pos = prev_pos + (prev_vel*dt).to(u.kpc)
+                    
+                    # Prepare data for KDTree (magnitude only, no units)
+                    curr_state_all = np.hstack([curr_all_pos.T])
+                    pred_state = np.hstack([pred_pos.value.T])
+            
+                    # Build Tree on the current snapshot
+                    tree = cKDTree(curr_state_all)
+            
+                    # Query: Find the nearest neighbor for every predicted particle position
+                    _, matched_indices = tree.query(pred_state, k=1)
+                        
+                    xyz_list.append(curr_all_pos[:,matched_indices]*u.kpc)
+                    v_xyz_list.append(curr_all_vel[:,matched_indices]*(u.km/u.s))
+                    m_list.append(curr_all_masses[matched_indices])
 
-        # Extract initial state vectors (at t_final)
-        # Shape: (N_sample, 3)
-        curr_pos = np.array([curr_data[f][rand_indices] for f in ["x", "y", "z"]]).T * u.kpc
-        curr_vel = np.array([curr_data[f][rand_indices] for f in ["vx", "vy", "vz"]]).T * (u.km/u.s)
+                
+            # Create dictionary with state of the particles 
+            out[pid] = {"xyz": np.hstack(xyz_list),
+                        "v_xyz": np.hstack(v_xyz_list),
+                        }
+            
+        return out"""
+        
 
-        # Store initial data
-        for i, pid in enumerate(tracked_pids):
-            out[pid]["xyz"].append(curr_pos[i])
-            out[pid]["v_xyz"].append(curr_vel[i])
 
-        # 3. Iterate Backwards
-        # Loop from the last snapshot index down to 1
-        for i in range(len(snapshots) - 1, 0, -1):
+    def track_particles(self, particleIDs, PartType, z_range=None, snap_path=None):
+        
+        # --- Helper: Vectorized Distance Calculation ---
+        def get_best_match_indices(pred_pos, pred_vel, pred_mass, 
+                                cand_pos, cand_vel, cand_mass, 
+                                k=5):
+            """
+            Finds the best match based on Position, Velocity, and Mass.
+            1. Finds k-nearest spatial neighbors.
+            2. Filters/Scores them based on Velocity difference and Mass similarity.
+            """
+            # Build Tree once for the candidate snapshot
+            tree = cKDTree(cand_pos)
             
-            snap_now = particles_list[i]
-            snap_prev = particles_list[i-1]
+            # Query k nearest neighbors for all particles at once
+            # dists: (N_tracked, k), indices: (N_tracked, k)
+            dists, indices = tree.query(pred_pos, k=k)
             
-            # --- A. Time Conversion (z -> Age of Universe) ---
-            # Look for redshift in the dictionary keys (assuming 'redshift' or 'z')
-            z_now = get_z_from_snapnum(self.__snap_path__+f"snap_{snap_now:03}.hdf5")
-            z_prev = get_z_from_snapnum(self.__snap_path__+f"snap_{snap_prev:03}.hdf5")
+            best_indices = []
             
-            if z_now is None or z_prev is None:
-                raise ValueError(f"Snapshot data at index {i} or {i-1} is missing 'redshift' key.")
+            # Iterate through each tracked particle to find the best among the k neighbors
+            for i in range(len(pred_pos)):
+                # Get the indices of the k candidates for this particle
+                neighbor_idxs = indices[i]
+                
+                # Extract properties of these neighbors
+                n_vel = cand_vel[neighbor_idxs]   # shape (k, 3)
+                n_mass = cand_mass[neighbor_idxs] # shape (k,)
+                
+                # --- SCORING METRIC ---
+                
+                # 1. Velocity Score: Euclidean distance in velocity
+                # We predict velocity is constant. Calculate diff.
+                v_diff = np.linalg.norm(n_vel - pred_vel[i], axis=1)
+                
+                # 2. Mass Score: Fractional difference
+                # Avoid divide by zero
+                m_target = pred_mass[i] 
+                m_diff = np.abs(n_mass - m_target) / m_target
+                
+                # 3. Combine Scores (Heuristic weights)
+                # Weights depend on simulation units, but generally:
+                # We prioritize Mass (hard constraint) and Velocity (phase space)
+                # Since 'dists' (position) is already minimized by k-NN, we use it as a tiebreaker
+                # if velocity/mass are similar.
+                
+                # Simple weighted cost: 
+                # cost = w_v * v_diff + w_m * m_diff * scaling
+                # Heuristic: reject if mass differs by > 5%
+                valid_mass_mask = m_diff < 1.0 
+                
+                if np.any(valid_mass_mask):
+                    # If we have valid mass candidates, pick the one with closest velocity
+                    masked_v_diff = v_diff.copy()
+                    masked_v_diff[~valid_mass_mask] = np.inf
+                    best_k_index = np.argmin(masked_v_diff)
+                else:
+                    # Fallback: Just pick the closest position (index 0)
+                    best_k_index = 0
+                    
+                best_indices.append(neighbor_idxs[best_k_index])
+                
+            return np.array(best_indices)
 
-            # Calculate Lookback Time / Age
-            # cosmo.age(z) returns the age of the universe at that redshift in Gyr
-            t_now = cosmo.age(z_now)
-            t_prev = cosmo.age(z_prev)
-            
-            # dt is the time difference between snapshots
-            dt = (t_now - t_prev).to(u.s)
-            
-            # --- B. Predict Position at t_prev ---
-            # Formula: r_prev_pred = r_now - v_now * dt
-            # Convert velocity * time to Distance units (kpc)
-            dist_change = (curr_vel * dt).to(u.kpc)
-            pred_pos = curr_pos - dist_change
-            
-            # --- C. Find Matches in Previous Snapshot ---
-            # Prepare data for KDTree (magnitude only, no units)
-            prev_all_pos = np.array([snap_prev[f] for f in ["x", "y", "z"]]).T 
-            pred_pos_val = pred_pos.to_value(u.kpc)
-            
-            # Build Tree on the previous snapshot
-            tree = cKDTree(prev_all_pos)
-            
-            # Query: Find the nearest neighbor for every predicted particle position
-            _, matched_indices = tree.query(pred_pos_val, k=1)
-            
-            # --- D. Update Current State ---
-            # Update vectors to the actual data found in the previous snapshot
-            curr_pos = np.array([snap_prev[f][matched_indices] for f in ["x", "y", "z"]]).T * u.kpc
-            curr_vel = np.array([snap_prev[f][matched_indices] for f in ["vx", "vy", "vz"]]).T * (u.km/u.s)
-            
-            # --- E. Store Data ---
-            for k, pid in enumerate(tracked_pids):
-                out[pid]["xyz"].append(curr_pos[k])
-                out[pid]["v_xyz"].append(curr_vel[k])
+        # --------------------------------------------------
 
-        # 4. Format Output (Reverse to Chronological Order)
-        # The loop stored data [t_final, t_final-1, ... t_start]
-        # We want [t_start, ... t_final]
-        for pid in tracked_pids:
-            # Stack into (N_snaps, 3) arrays and reverse
-            out[pid]["xyz"] = np.vstack(out[pid]["xyz"][::-1])
-            out[pid]["v_xyz"] = np.vstack(out[pid]["v_xyz"][::-1])
+        out = {pid: {"xyz": [], "v_xyz": [], "mass": []} for pid in particleIDs}
+        
+        # Load snapshots
+        snapshots_indices = convert_zrange_to_snapshots(z_range, self.__snap_path__)
+        snapshots_indices = list(range(snapshots_indices[0], snapshots_indices[-1]+1))
+        
+        # Pre-load snapshots to clean up missing ones
+        # (Memory optimized: In large sims, don't load ALL at once. 
+        # But sticking to your logic, we clean the list first)
+        valid_snapshots = []
+        valid_data = []
+        
+        for snap in snapshots_indices:
+            # (Your existing try/except loading logic here)
+            try:
+                p_data = self.__load_part_data__(snap=snap, snap_path=snap_path, PartType=PartType)
+                valid_snapshots.append(snap)
+                valid_data.append(p_data)
+            except (FileNotFoundError, KeyError):
+                try:
+                    # Fallback path logic
+                    p_data = self.__load_part_data__(snap=snap, snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/", PartType=PartType)
+                    valid_snapshots.append(snap)
+                    valid_data.append(p_data)
+                except:
+                    continue
+
+        if not valid_data:
+            return {}
+
+        redshifts = [d["Redshift"][0] for d in valid_data]
+
+        # --- Initialization ---
+        # We need to maintain the "Current State" of the particles we are tracking
+        # to perform predictions for the next step.
+        
+        # Check first snapshot for IDs
+        first_snap_data = valid_data[0]
+        
+        # Indices of requested PIDs in the first snapshot
+        # This assumes all PIDs exist in first snapshot as per your code
+        mask = np.isin(first_snap_data["iord"], particleIDs)
+        
+        # We need a mapping from PID -> Index in current arrays to keep order sorted
+        # Let's align everything to the order of 'particleIDs' input
+        current_xyz = []
+        current_vxyz = []
+        current_mass = []
+        
+        valid_pids = []
+        
+        for pid in particleIDs:
+            idx = np.where(first_snap_data["iord"] == pid)[0]
+            if len(idx) > 0:
+                idx = idx[0]
+                current_xyz.append([first_snap_data[f][idx] for f in ["x","y","z"]]) # magnitude
+                current_vxyz.append([first_snap_data[f][idx] for f in ["vx","vy","vz"]]) # magnitude
+                current_mass.append(first_snap_data["mass"][idx])
+                valid_pids.append(pid)
+                
+                # Save first step to output
+                out[pid]["xyz"].append(np.array([first_snap_data[f][idx] for f in ["x","y","z"]]) * u.kpc)
+                out[pid]["v_xyz"].append(np.array([first_snap_data[f][idx] for f in ["vx","vy","vz"]]) * (u.km/u.s))
+        
+        # Convert to numpy arrays for vectorization (N_particles, 3)
+        current_xyz = np.array(current_xyz)
+        current_vxyz = np.array(current_vxyz)
+        current_mass = np.array(current_mass)
+        
+        particleIDs = valid_pids # Only track found particles
+
+        # --- Tracking Loop ---
+        # We iterate snapshots, not particles. This is the key optimization.
+        
+        for i in range(1, len(valid_snapshots)):
+            prev_data = valid_data[i-1]
+            curr_data = valid_data[i]
             
-        return out   
+            # Prepare Current Snapshot Data Arrays (Candidates)
+            cand_pos = np.vstack([curr_data["x"], curr_data["y"], curr_data["z"]]).T
+            cand_vel = np.vstack([curr_data["vx"], curr_data["vy"], curr_data["vz"]]).T
+            cand_mass = curr_data["mass"]
+            
+            matched_indices = None
+
+            # METHOD A: IDs exist in this snapshot (Exact Match)
+            if "iord" in curr_data.keys():
+                # Create a lookup dictionary for speed: ID -> Array Index
+                id_to_index = {pid: idx for idx, pid in enumerate(curr_data["iord"])}
+                
+                iteration_indices = []
+                found_mask = []
+                
+                for pid in particleIDs:
+                    if pid in id_to_index:
+                        iteration_indices.append(id_to_index[pid])
+                        found_mask.append(True)
+                    else:
+                        # Particle lost even though IDs exist (rare/error)
+                        iteration_indices.append(0) # Placeholder
+                        found_mask.append(False)
+                
+                matched_indices = np.array(iteration_indices)
+                # Note: You might want to handle lost particles here, 
+                # but for now we assume they are found if IDs exist.
+
+            # METHOD B: IDs do not exist (Predictive Match)
+            else:
+                # 1. Calculate dt
+                z_prev = redshifts[i-1]
+                z_curr = redshifts[i]
+                prev_t = self.cosmo.age(z_prev)
+                curr_t = self.cosmo.age(z_curr)
+                dt = (curr_t - prev_t).to(u.s).value # Get magnitude in seconds
+                
+                # Convert velocity units if necessary. 
+                # Assuming Position is kpc and Velocity is km/s:
+                # 1 km/s = 1.022e-9 kpc/s roughly, or convert explicitly using astropy
+                v_conv_factor = (1 * (u.km/u.s)).to(u.kpc/u.s).value
+                
+                # 2. Predict Positions (Linear Extrapolation)
+                # x_pred = x_prev + v_prev * dt
+                pred_pos = current_xyz + (current_vxyz * v_conv_factor * dt)
+                
+                # 3. Find Matches (Vectorized KDTree + Physics Check)
+                matched_indices = get_best_match_indices(
+                    pred_pos, current_vxyz, current_mass,
+                    cand_pos, cand_vel, cand_mass,
+                    k=20 # Check top 10 nearest spatial neighbors
+                )
+
+            # --- Update State & Save ---
+            
+            # Extract new data using the found indices
+            new_pos = cand_pos[matched_indices]
+            new_vel = cand_vel[matched_indices]
+            new_mass = cand_mass[matched_indices]
+            
+            # Update current state for the *next* iteration prediction
+            current_xyz = new_pos
+            current_vxyz = new_vel
+            current_mass = new_mass
+            
+            # Append to output dictionary
+            for k, pid in enumerate(particleIDs):
+                out[pid]["xyz"].append(new_pos[k] * u.kpc)
+                out[pid]["v_xyz"].append(new_vel[k] * (u.km/u.s))
+
+        # Formatting output arrays (vstack) as per original requirement
+        for pid in particleIDs:
+            out[pid]["xyz"] = np.vstack(out[pid]["xyz"]).T # shape (3, N_snaps) usually preferred, check your desired output
+            out[pid]["v_xyz"] = np.vstack(out[pid]["v_xyz"]).T
+
+        return out
+      
     
     
     
@@ -577,6 +761,7 @@ class EXPBFE_builder():
         self.sim = sim
         self.__output_dir__ = output_dir
         self.snapshots = convert_zrange_to_snapshots(z_range, self.sim.__snap_path__)
+        self.snapshots = [s for s in range(self.snapshots[0], self.snapshots[-1]+1)]
         # Print first and last snapshot to check
         print(f"Snapshots used for the expansion: {self.snapshots[0]} to {self.snapshots[-1]}")
         
@@ -648,7 +833,7 @@ class EXPBFE_builder():
 
         # Default values for calculating the density profile
         density_params_df = {"bins": 400,
-                             "rangevals": [0,2.5]}
+                             "rangevals": [0.1,600]}
         
         density_params_df.update(density_params)
 
@@ -756,9 +941,14 @@ class EXPBFE_builder():
         coefs_container = None
 
         for snap in snapshots:  
-
+            
             # Load particles from z=0 snapshot
-            dat = self.sim.__load_part_data__(snap=snap, PartType=PartType)   
+            try:
+                dat = self.sim.__load_part_data__(snap=snap, PartType=PartType)   
+            except FileNotFoundError:
+                dat = self.sim.__load_part_data__(snap=snap, 
+                                                  snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/", 
+                                                  PartType=PartType)
 
             # Scale to virial units
             mass = np.array(dat["mass"]) / self.sim.M_vir
@@ -766,9 +956,7 @@ class EXPBFE_builder():
 
 
             # Read age of the universe at snapshot
-            f = h5py.File(f"{self.sim.__snap_path__}snap_{snap:03}.hdf5")
-                
-            z = f["Header"].attrs["Redshift"]
+            z = dat["Redshift"][0]
             t = self.sim.cosmo.age(z).value                                                           
             
             # Calculate the coefficients of the BFE 
@@ -836,6 +1024,18 @@ class EXPBFE_builder():
             return output_dict
         else:
             return output_dict[field]
+        
+    def __update_coefs__(self, 
+                         new_coefs_file: str, 
+                         PartType: int):
+        
+        self.coefs_files_dict[PartType] = new_coefs_file
+        # Read new coefficient matrix at snapshots
+        new_coefs = pyEXP.coefs.Coefs.factory(new_coefs_file)
+        self.coefs[PartType] = new_coefs
+        print(f"PartType{PartType} coefficients updated.")
+        
+        
         
 
     def plot_density_profile(self):
@@ -1107,6 +1307,98 @@ class EXPBFE_builder():
 
         ax.set_title(f"l={l}, m={m}")
         return ax
+    
+    def get_SNR_matrix(self, 
+                       PartType: int,
+                       time: float, 
+                       decorrelate=False):
+        """
+        Returns the signal-to-noise (SNR, i.e. amplitude to variance) ratio for the coefficients 
+        of the basis functions for all the radial orders associated to the given m and l 
+        orders at a given time. 
+
+        Args:
+            time (float): time at which the coefficients are evaluated
+
+        Returns:
+            ndarray: array of the SNR for each radial mode at the specified angular mode (l(l+1),n)
+        """
+        
+        # Get the values and covariance of the coefficients for the basis at time t
+        # output is a list where each element refers to a given spherical orders
+        
+        covar = self.__get_CoefCovariance__(PartType=PartType)
+        coefs_var_subsamples = covar.getCoefCovariance(time)
+        
+        n_subsamples = len(coefs_var_subsamples)
+        
+        # Read-in the order of the expansion
+        with open(self.basis_files_dict[PartType], "r") as yaml_file:
+            basis_params = yaml.safe_load(yaml_file)
+            lmax = basis_params["parameters"]["Lmax"]
+
+        SNR_mesh = []
+        for l in range(lmax+1):
+            for m in range(l+1):
+                
+                # Define the index of the coefficients and covariance basis in the outputs
+                spherical_index = (l * (l + 1)) // 2 + m
+                
+                # Read coefficients from each subsample
+                coefs_list = []
+                for subsample in coefs_var_subsamples:
+                    coefs_list.append(subsample[spherical_index][0])
+                coefs_list = np.vstack(coefs_list)
+
+                meanCof = np.mean(coefs_list,axis=0)
+                varCof = np.cov(coefs_list.T)
+                
+                if decorrelate:
+                    # Make eigenvalue analysis on covariance matrix
+                    val, vec = np.linalg.eigh(varCof)
+                    # Project coefficients into decorrelated basis
+                    b = np.dot(vec.T, meanCof)
+                    
+                    SNR = np.abs(b)**2 * n_subsamples / np.abs(val)
+                
+                else:
+                
+                    SNR = np.abs(meanCof)**2 * n_subsamples / np.abs(np.diag(varCof))
+
+                SNR_mesh.append(SNR)
+        
+        
+        return np.vstack(SNR_mesh)
+
+
+    def suppress_coefficients(self,
+                              PartType,
+                              mask,
+                              update=False):
+        
+        # Read original coefficients
+        coefs_file = self.coefs_files_dict[PartType]
+        coefs = pyEXP.coefs.Coefs.factory(coefs_file)
+        coefs_values = coefs.getAllCoefs()
+        
+        # Mask coefficient at each snapshot
+        for i,time in enumerate(coefs.Times()):
+            new_coefs = coefs_values[:,:,i]
+            new_coefs[mask] = np.complex128(0)
+            coefs.setMatrix(time, coefs_values[:,:,i])
+            
+        # Write new coefficient file
+        new_coefs_file = coefs_file.replace(".h5","_masked.h5")
+        
+        if os.path.exists(new_coefs_file):
+            os.remove(new_coefs_file)
+        coefs.WriteH5Coefs(new_coefs_file) 
+        
+        if update:
+            self.__update_coefs__(new_coefs_file=new_coefs_file,
+                                  PartType=PartType)
+                    
+        return new_coefs_file
 
   
     
@@ -1234,10 +1526,6 @@ def plot_acceleration_field_xz(pot,
                         
                             
 
-
-
-
-
 def convert_zrange_to_snapshots(z_range, snap_path):
     """
     Finds all snapshots within a given redshift range [z_min, z_max].
@@ -1247,7 +1535,7 @@ def convert_zrange_to_snapshots(z_range, snap_path):
     
     # 1. Get all .hdf5 files and sort them by snapshot number immediately
     # This prevents 'os.listdir' from returning arbitrary order
-    files = [f for f in os.listdir(snap_path) if f.startswith('snap_') and f.endswith('.hdf5')]
+    files = [f for f in os.listdir(snap_path) if f.startswith('snap')]
     
     # Sort by the integer number in the filename (e.g., snap_002.hdf5 -> 2)
     files.sort(key=lambda x: int(x.split('_')[1].split('.')[0]))
@@ -1262,6 +1550,9 @@ def convert_zrange_to_snapshots(z_range, snap_path):
     for f_name in files:
         # Construct full path
         full_path = os.path.join(snap_path, f_name)
+        if not full_path.endswith(".hdf5"):
+            snap_n = f_name.split("_")[1]
+            full_path = os.path.join(snap_path, f"{f_name}/snap_{snap_n}.0.hdf5")
         
         try:
             with h5py.File(full_path, "r") as f:
@@ -1307,12 +1598,12 @@ def convert_zrange_to_snapshots(z_range, snap_path):
 def get_snapshot_files(snap_path):
         
     # Get all the .hdf5 files in the directory
-    outputs = os.listdir(snap_path)
-    outputs = [out for out in outputs if ".hdf5" in out]
+    outputs = [f for f in os.listdir(snap_path) 
+               if f.startswith('snap')]
     
     # Order files by snapshot
-    n_outputs = sorted([int(out.replace("snap_","").replace(".hdf5","")) for out in outputs])
-    ordered_outputs = [f"snap_{n}.hdf5" for n in n_outputs]
+    idx = np.argsort([int(out.split("_")[1]) for out in outputs])
+    ordered_outputs = [outputs[i] for i in idx]
     
     return ordered_outputs
 
@@ -1323,3 +1614,7 @@ def get_z_from_snapnum(snapshot_file):
         z = f['Header'].attrs['Redshift']
         
     return z
+
+
+
+

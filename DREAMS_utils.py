@@ -57,10 +57,15 @@ def load_group_data(path, keys=None):
       cat - a dictionary that contains all of the group and subhalo information for the specified keys
     """
     cat = dict()
-    fof_files = os.listdir(path)
-    fof_files.sort()
+    if path.endswith(".hdf5"):
+        fof_files = [path]
+    else:
+        fof_files = [f for f in os.listdir(path) if f.startswith("fof_subhalo_tab") & f.endswith(".hdf5")]
+        fof_files.sort()
+        
     for file in fof_files:
-        file = h5py.File(f"{path}{file}")
+        file_path = os.path.join(path,file)
+        file = h5py.File(file_path,"r")
         if keys is None:
             # Load all keys:
             keys = list(file["Group"].keys()) + list(file["Subhalo"].keys())
@@ -103,32 +108,62 @@ def load_particle_data(snap_path: str,
       cat - a dictionary that contains all of the particle information for the specified keys and particle types
     """
     
-    path = f'{snap_path}/snap_{snap:03}.hdf5'
+    if snap_path.endswith(".hdf5"):
+        snap_files = [snap_path]
+    else:
+        try:
+            snap_files = [f"snapdir_{snap:03}/{f}" for f in os.listdir(os.path.join(snap_path,f"snapdir_{snap:03}")) 
+                        if f.endswith(".hdf5")]
+            snap_files.sort()
+        except FileNotFoundError:
+            snap_files = [os.path.join(snap_path,f"snap_{snap:03}.hdf5")]
+    
     
     cat = dict()
-    with h5py.File(path) as ofile:
-        
-        if type(part_types) == type(0):
-            part_types = [part_types]
-        
-        for part_type in part_types:
-            if part_type <= 5:
-                keys = ofile[f'PartType{part_type}'].keys()
-                for key in keys:
-                    if part_type == 1 and key == 'Masses':
-                        cat[f'PartType{part_type}/{key}'] = np.ones(ofile['PartType1/Coordinates'].shape[0])*ofile['Header'].attrs['MassTable'][1]
-                    else:
-                        if f'PartType{part_type}/{key}' in ofile:
-                            cat[f'PartType{part_type}/{key}'] = np.array(ofile[f'PartType{part_type}/{key}'])
-            else:
-                print('Particle type does not exist, try an integer <= 5')
-                return
+    for file in snap_files:
+        path = os.path.join(snap_path,file)
+        with h5py.File(path) as ofile:
+            
+            if "Redshift" not in cat:
+                # Add redshift info
+                cat["Redshift"] = ofile['Header'].attrs['Redshift']
+            
+            if type(part_types) == type(0):
+                part_types = [part_types]
+            
+            for part_type in part_types:
+                if part_type <= 5:
+                    try:
+                        keys = ofile[f'PartType{part_type}'].keys()
+                    except KeyError:
+                        #PartType does not exist in file
+                        continue
+                    for key in keys:
+                        if part_type == 1 and key == 'Masses':
+                            if f'PartType{part_type}/{key}' in cat:
+                                cat[f'PartType{part_type}/{key}'] = np.concatenate([cat[key], np.ones(ofile['PartType1/Coordinates'].shape[0])*ofile['Header'].attrs['MassTable'][1]])
+                            else:  
+                                cat[f'PartType{part_type}/{key}'] = np.ones(ofile['PartType1/Coordinates'].shape[0])*ofile['Header'].attrs['MassTable'][1]
+                        else:
+                            if f'PartType{part_type}/{key}' in ofile:
+                                if f'PartType{part_type}/{key}' in cat:
+                                    cat[f'PartType{part_type}/{key}'] = np.concatenate([cat[f'PartType{part_type}/{key}'],
+                                                                                        np.array(ofile[f'PartType{part_type}/{key}'])])
+                                else:
+                                    cat[f'PartType{part_type}/{key}'] = np.array(ofile[f'PartType{part_type}/{key}'])
+                else:
+                    print('Particle type does not exist, try an integer <= 5')
+                    return
     return cat
 
 def config_pynbody_units(snap_path, snap):
     
     #load in to find scale factor:
-    path = f'{snap_path}snap_{snap:03}.hdf5'
+    if os.path.exists(f'{snap_path}snap_{snap:03}.hdf5'):
+        path = f'{snap_path}snap_{snap:03}.hdf5'
+    else:
+        path = os.path.join(snap_path,f"snapdir_{snap:03}/snap_{snap:03}.0.hdf5")
+
     try:
         param_info = np.loadtxt(f'{snap_path}aux_files/ics_config.txt',  dtype='str', skiprows=20, max_rows=6)
     except FileNotFoundError:
@@ -257,7 +292,7 @@ def load_zoom_particle_data_pynbody(snap_path: str,
 
     # Load subfind information
     if os.path.exists(f"{group_path}fof_subhalo_tab_{snap:03}.hdf5"):
-        fof_path = group_path
+        fof_path = os.path.join(group_path, f"fof_subhalo_tab_{snap:03}.hdf5")
     else:
         # Subfind table for high-cadence snapshots are saved in a different format
         if os.path.exists(f"{group_path}groups_{snap:03}/"):
@@ -300,17 +335,27 @@ def load_zoom_particle_data_pynbody(snap_path: str,
         out = pynbody.new(gas=int(num_parts[part_type]))
     elif part_type==1:
         out = pynbody.new(dm=int(num_parts[part_type]))
-        # Masses are not stored with the other info
-        with h5py.File(f'{snap_path}snap_{snap:03}.hdf5') as ofile:
-            out['Masses'] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
-            mapped_name = name_map('Masses', reverse=True)
-            out[mapped_name].units = unit_dict['Masses']
-            out[mapped_name] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+        try:
+            # Masses are not stored with the other info
+            with h5py.File(f'{snap_path}snap_{snap:03}.hdf5') as ofile:
+                out['Masses'] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+                mapped_name = name_map('Masses', reverse=True)
+                out[mapped_name].units = unit_dict['Masses']
+                out[mapped_name] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+        except:
+            with h5py.File(f'{snap_path}snapdir_{snap:03}/snap_{snap:03}.0.hdf5') as ofile:
+                out['Masses'] = np.ones(int(num_parts[part_type]))*ofile['Header'].attrs['MassTable'][1]
+                mapped_name = name_map('Masses', reverse=True)
+                out[mapped_name].units = unit_dict['Masses']
+                out[mapped_name] = np.ones(int(num_parts[part_type]))*ofile['Header'].attrs['MassTable'][1]
+            
     elif part_type==4:
         out = pynbody.new(star=int(num_parts[part_type]))
     
     # Load all the other fields from 
     for key in dat.keys():
+        if key == "Redshift":
+            continue
         key = key.split('/')[1]
         mapped_name = name_map(key, reverse=True)
         out[mapped_name] = dat[f'PartType{part_type}/{key}'][offsets[part_type]:offsets[part_type]+num_parts[part_type]]
@@ -326,6 +371,9 @@ def load_zoom_particle_data_pynbody(snap_path: str,
 
     # Convert to physical units
     out.physical_units()
+    
+    # Add redshift information
+    out["Redshift"] = dat["Redshift"]
 
     return out
 
@@ -715,12 +763,16 @@ def makemodel(func,M,funcargs,rvals = 10.**np.linspace(-2.,4.,2000),pfile='',pla
 def get_cosmology(snap_path):
 
         # Define cosmology of the simulation
-        f = h5py.File(f"{snap_path}snap_090.hdf5")
+        if os.path.exists(f"{snap_path}snap_090.hdf5"):
+            f = h5py.File(f"{snap_path}snap_090.hdf5")
+        else:
+            f = h5py.File(os.path.join(snap_path,f"snapdir_001/snap_001.0.hdf5"))
 
         Om_0 = f["Header"].attrs["Omega0"]
         H0 = f["Header"].attrs["HubbleParam"]*100 * u.km / u.s / u.Mpc
 
         cosmo = FlatLambdaCDM(H0=H0, Om0=Om_0)
+        f.close()
 
         return cosmo
 
