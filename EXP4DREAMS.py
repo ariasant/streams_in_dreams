@@ -8,18 +8,19 @@ import numpy as np
 import os
 import pynbody
 import DREAMS_utils
-import pyEXP
 import yaml
 import h5py
-import k3d
+
 from gala.units import SimulationUnitSystem
+import gala.integrate as gi
 import gala.potential as gp
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from scipy.ndimage import gaussian_filter1d
+import pyEXP
+
 from scipy.optimize import curve_fit
 from scipy.spatial import cKDTree
+import time
 
 
 
@@ -411,115 +412,6 @@ class DREAMSMW():
         return fig
     
     
-    """def track_particles(self,
-                        particleIDs: np.array,
-                        PartType: int,
-                        z_range=None,
-                        snap_path=None):
-        
-        # Save position and velocity of the particles at different snapshots
-        out = {}
-        # List to put IDs of particles not found in any snapshot
-        flagged_particles = []
-        
-        # Load all the particles bound to the MW at different snapshots
-        snapshots = convert_zrange_to_snapshots(z_range, self.__snap_path__)
-        snapshots = [s for s in range(snapshots[0], snapshots[-1]+1)]
-        
-        particles_list = []
-        for snap in snapshots:
-            try:
-                particles_list.append(self.__load_part_data__(snap=snap,
-                                                              snap_path=snap_path,
-                                                              PartType=PartType))
-            except FileNotFoundError or KeyError:
-                try:
-                    particles_list.append(self.__load_part_data__(snap=snap,
-                                                                snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/",
-                                                                PartType=PartType))
-                except FileNotFoundError:
-                    particles_list.append(0)
-        
-        # Remove absent snapshot numbers
-        particles_list = [p for p in particles_list if type(p)!=int]
-        snapshots = [snap for snap, p in zip(snapshots, particles_list) if type(p)!=int]
-        redshifts = [p["Redshift"][0] for p in particles_list if type(p)!=int]
-                
-                
-        # Ensure all particles exists at the first snapshot
-        for pid in particleIDs:
-            idx = np.isin(particles_list[0]["iord"],pid)
-            if np.sum(idx)==0:
-                # Particle not found in this snapshot
-                flagged_particles.append(pid)
-        # Remove flagged particles
-        for pid in flagged_particles:
-            _ = out.pop(pid, None)
-    
-                
-        
-        for pid in particleIDs:    
-            
-            xyz_list, v_xyz_list, m_list = [], [], []
-        
-            for snap in snapshots:
-                
-                # Load particles bound to the MW halo at snapshot
-                particles = particles_list[snapshots.index(snap)]
-                
-                #Check if particle ID is provided
-                if "iord" in particles.keys():
-                    # Read in the position and velocity data of the particle
-                    idx = np.isin(particles["iord"],pid)
-                    xyz = np.array([particles[idx][f] for f in ["x", "y","z"]])*u.kpc
-                    v_xyz = np.array([particles[idx][f] for f in ["vx", "vy","vz"]])*(u.km/u.s)
-                
-                    xyz_list.append(xyz)
-                    v_xyz_list.append(v_xyz)
-                    m_list.append(particles[idx]["mass"])
-                    
-                else:
-                    # Infer the position and velocity of the particle
-                    prev_pos = xyz_list[snapshots.index(snap)-1]
-                    prev_vel = v_xyz_list[snapshots.index(snap)-1]
-                    prev_masses = m_list[snapshots.index(snap)-1]
-                    
-                    curr_all_pos = np.array([particles[f] for f in ["x", "y","z"]])
-                    curr_all_vel = np.array([particles[f] for f in ["vx", "vy","vz"]])
-                    curr_all_masses = particles["mass"]
-                    
-                    # Get time difference between snapshots
-                    prev_t = self.cosmo.age(redshifts[snapshots.index(snap)-1])
-                    curr_t = self.cosmo.age(redshifts[snapshots.index(snap)])
-
-                    dt = (curr_t - prev_t).to(u.s)
-            
-                    # Predict Position at current t
-                    pred_pos = prev_pos + (prev_vel*dt).to(u.kpc)
-                    
-                    # Prepare data for KDTree (magnitude only, no units)
-                    curr_state_all = np.hstack([curr_all_pos.T])
-                    pred_state = np.hstack([pred_pos.value.T])
-            
-                    # Build Tree on the current snapshot
-                    tree = cKDTree(curr_state_all)
-            
-                    # Query: Find the nearest neighbor for every predicted particle position
-                    _, matched_indices = tree.query(pred_state, k=1)
-                        
-                    xyz_list.append(curr_all_pos[:,matched_indices]*u.kpc)
-                    v_xyz_list.append(curr_all_vel[:,matched_indices]*(u.km/u.s))
-                    m_list.append(curr_all_masses[matched_indices])
-
-                
-            # Create dictionary with state of the particles 
-            out[pid] = {"xyz": np.hstack(xyz_list),
-                        "v_xyz": np.hstack(v_xyz_list),
-                        }
-            
-        return out"""
-        
-
 
     def track_particles(self, particleIDs, PartType, z_range=None, snap_path=None):
         
@@ -618,6 +510,7 @@ class DREAMSMW():
             return {}
 
         redshifts = [d["Redshift"][0] for d in valid_data]
+        times = [self.cosmo.age(z).to(u.Gyr) for z in redshifts]
 
         # --- Initialization ---
         # We need to maintain the "Current State" of the particles we are tracking
@@ -650,6 +543,8 @@ class DREAMSMW():
                 # Save first step to output
                 out[pid]["xyz"].append(np.array([first_snap_data[f][idx] for f in ["x","y","z"]]) * u.kpc)
                 out[pid]["v_xyz"].append(np.array([first_snap_data[f][idx] for f in ["vx","vy","vz"]]) * (u.km/u.s))
+            
+            # Append time info
         
         # Convert to numpy arrays for vectorization (N_particles, 3)
         current_xyz = np.array(current_xyz)
@@ -739,6 +634,7 @@ class DREAMSMW():
         for pid in particleIDs:
             out[pid]["xyz"] = np.vstack(out[pid]["xyz"]).T # shape (3, N_snaps) usually preferred, check your desired output
             out[pid]["v_xyz"] = np.vstack(out[pid]["v_xyz"]).T
+            out[pid]["times"] = times
 
         return out
       
@@ -755,8 +651,7 @@ class EXPBFE_builder():
                  basis_params_dict: dict,
                  density_dict: dict,
                  z_range: list[float], # can be int or str depending if it isn't or is highcadence
-                 output_dir: str,
-                 high_cadence: bool=False):
+                 output_dir: str):
         
         self.sim = sim
         self.__output_dir__ = output_dir
@@ -795,10 +690,11 @@ class EXPBFE_builder():
         print(f"Calculating the coefficients at snapshots: {self.snapshots}", flush=True)
         self.coefs = {}
         for PartType, basis in self.basis.items():
+            start = time.time()
             self.coefs[PartType] = self.__get_coefs__(basis=basis,
                                                       snapshots=self.snapshots,
                                                       PartType=PartType)
-            
+            print(f"Time taken for PartType {PartType}: {(time.time()-start)/60:.2f} minutes", flush=True)
     
     def __build_basis__(self, 
                         PartType: int,
@@ -997,33 +893,6 @@ class EXPBFE_builder():
         
         return covar
     
-
-    def __shell_average__(self,
-                          basis, 
-                          coefs,
-                          r_min: float, 
-                          field: str = None, 
-                          n_points=1000):
-        
-        # Load basis coefficients
-        basis.set_coefs(coefs)
-
-        theta = np.arccos(np.random.uniform(-1, 1, size=n_points))
-        phi = np.random.uniform(0, 2*np.pi, size=n_points)
-        r = r_min
-
-        x = r * np.sin(theta) * np.cos(phi)
-        y = r * np.sin(theta) * np.sin(phi)
-        z = r * np.cos(theta)
-
-        sph_avg = np.mean([basis.getFields(xi, yi, zi) for xi, yi, zi in zip(x, y, z)], axis=0)
-
-        output_dict = dict(zip(basis.getFieldLabels(), sph_avg))
-
-        if field is None:
-            return output_dict
-        else:
-            return output_dict[field]
         
     def __update_coefs__(self, 
                          new_coefs_file: str, 
@@ -1034,110 +903,6 @@ class EXPBFE_builder():
         new_coefs = pyEXP.coefs.Coefs.factory(new_coefs_file)
         self.coefs[PartType] = new_coefs
         print(f"PartType{PartType} coefficients updated.")
-        
-        
-        
-
-    def plot_density_profile(self):
-        
-        dat = self.sim.__load_part_data__(snap=self.snapshots[-1], PartType=1)
-        rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
-                                                   weights=dat["mass"], 
-                                                   bins=100,
-                                                   rangevals=[1,300]) 
-        
-        # Get density contribution from different m values
-        exp_dens, exp_densm0, exp_densml0 = [],[],[]
-        rbins_exp = np.zeros(len(rbins)+1)
-        rbins_exp[1:] = rbins
-        for i in range(len(rbins_exp)-1):
-            out_dict = self.__shell_average__(field="dens", 
-                                              basis=self.basis[1],
-                                              coefs=self.coefs[1],
-                                              r_min=rbins_exp[i])
-            exp_dens.append(out_dict["dens"])
-            exp_densm0.append(out_dict["dens m=0"])
-            exp_densml0.append(out_dict["dens m>0"])
-        exp_dens = np.array(exp_dens)
-        
-        fig,ax = plt.subplots(figsize=(4,4))
-        ax.plot(rbins, dvals, label="Data")
-        ax.plot(rbins, exp_dens, label="EXP")
-        ax.plot(rbins, exp_densm0, label="EXP m=0")
-        ax.plot(rbins, exp_densml0, label="EXP m>0")
-        ax.set_yscale("log")
-        ax.set_xlabel("r [kpc]")
-        ax.set_ylabel("Density [$\\rm{M}_{\\odot}/\\rm{kpc}^3$]")
-        ax.set_xscale("log")
-        ax.legend()
-        
-        return fig,ax
-
-        
-
-    def plot_2D_integrated_field(self, 
-                                 basis,
-                                 coefs,
-                                 field: str,
-                                 x_bins: np.array,
-                                 y_bins: np.array,
-                                 z_bins: np.array,
-                                 ax: plt.axes,
-                                 integrate_over: str = "z",
-                                 **kwargs
-                                 ):
-        
-        basis.set_coefs(coefs)
-
-        # Understand which field to plot
-        field_labels = basis.getFieldLabels()
-        idx = field_labels.index(field)
-
-
-        # Understand which dimension to integrate on
-        if integrate_over=="z":
-            # Create array to hold the 2D field projection
-            exp_2d = np.zeros((len(x_bins),len(y_bins)))
-            dz = z_bins[1] - z_bins[0]
-            extent = [x_bins[0], x_bins[1], y_bins[0], y_bins[1]]
-            for i,xi in enumerate(x_bins):
-                for j, yj in enumerate(y_bins):
-                    field_sum = 0
-                    for zi in z_bins:
-                        outs = basis.getFields(xi, yj, zi)
-                        field_sum += outs[idx]*dz
-                    exp_2d[i,j] = field_sum
-
-        elif integrate_over=="y":
-            exp_2d = np.zeros((len(x_bins),len(z_bins)))
-            dy = y_bins[1] - y_bins[0]
-            extent = [x_bins[0], x_bins[1], z_bins[0], z_bins[1]]
-            for i,xi in enumerate(x_bins):
-                for j, zj in enumerate(z_bins):
-                    field_sum = 0
-                    for yi in y_bins:
-                        outs = basis.getFields(xi, yi, zj)
-                        field_sum += outs[idx]*dy
-                    exp_2d[i,j] = field_sum
-
-        elif integrate_over=="x":
-            exp_2d = np.zeros((len(y_bins),len(z_bins)))
-            dx = x_bins[1] - x_bins[0]
-            extent = [y_bins[0], y_bins[1], z_bins[0], z_bins[1]]
-            for i,yi in enumerate(y_bins):
-                for j, zj in enumerate(z_bins):
-                    field_sum = 0
-                    for xi in x_bins:
-                        outs = basis.getFields(xi, yi, zj)
-                        field_sum += outs[idx]*dx
-                    exp_2d[i,j] = field_sum
-        
-
-        # Plot the 2D projection
-        plot = ax.imshow(exp_2d, origin="lower",
-                         extent=extent, **kwargs)
-
-        return plot
 
 
 
@@ -1154,162 +919,9 @@ class EXPBFE_builder():
 
         return pot, self.exp_units
     
-    def surface_projection(self,
-                           basis,
-                           coefs,
-                           field: str, # dens, dens m=0, dens m>0, potl, potl m-0, ...
-                           time: float,
-                           extent: list, # e.g. [[xmin, ymin, 0.],[xmax, ymax, 0.]]
-                           grid: list, # [bins_x, bins_y, 0.],
-                           ax=None,
-                           circles=False
-                           ):
-        
-        # Initialise surface field generator
-        times = coefs.Times()
-    
-        generator = pyEXP.field.FieldGenerator(times, 
-                                               [el.to(self.exp_units["length"]).value if el!=0 else 0. for el in extent[0]], 
-                                               [el.to(self.exp_units["length"]).value if el!=0 else 0. for el in extent[1]], 
-                                               grid)
-        
-        surfaces = generator.slices(basis, coefs)
-
-        surface = surfaces[time][field]
-
-        non_zero_entries = [i for i in range(3) if grid[i]!=0]
-
-        x = np.linspace(extent[0][non_zero_entries[0]],
-                        extent[1][non_zero_entries[0]],
-                        grid[non_zero_entries[0]])
-        
-        y = np.linspace(extent[0][non_zero_entries[1]],
-                        extent[1][non_zero_entries[1]],
-                        grid[non_zero_entries[1]])
-        
-        xv, yv = np.meshgrid(x, y)
-
-        if field in ["dens", "dens m=0", "dens m>0"]:
-
-            # Convert to M_sun / kpc^2
-            surface = surface*(self.exp_units["mass"]/self.exp_units["length"]**2).to(u.Msun / u.pc**2)
-            surface = np.log10(surface)
-                
-            cbar_label = "$\\log_{10}(\\Sigma) \\; [\\rm{M}_{\\odot} \\, \\rm{pc}^{-2}]$"
-
-                
-        if field in ["potl", "potl m=0", "potl m>0"]:
-            # Convert to (km/s)^2
-            surface = surface*(self.exp_units["length"]**2 / self.exp_units["time"]**2).to(u.km**2 / u.s**2)
-            cbar_label = "$\\Phi \\; [\\rm{km}^2 \\, \\rm{s}^{-2}]$"
-
-        
-        if ax is None:
-            
-            fig, ax = plt.subplots()
-            ax.set_xlim([min(x.value),max(x.value)])
-            ax.set_ylim([min(y.value), max(y.value)])
-            cbar_label = field
-        
-        cont1 = ax.contour(xv, yv, surface, colors='k')
-        cont1.clabel(fontsize=9, inline=True)
-        cont2 = ax.contourf(xv, yv, surface)
-        
-        if ax is None:
-            cbar = fig.colorbar(cont2)
-            cbar.set_label(cbar_label)
-        
-        if circles:
-            # Plot circles showing 10 and 100 kpc
-            for r in [10, 100]:
-                circle = patches.Circle(
-                            (0,0), # center coordinates
-                            r,  # Radius
-                            color="red",
-                            fill=False, 
-                            linewidth=2,
-                            linestyle='-'
-                        )
-                ax.add_patch(circle)
-            
-        
-
-        return ax
-
-    def volume_render(self,
-                      basis,
-                      coefs,
-                      time: float, 
-                      field: str,
-                      grid_lim: int = 100,
-                      n_points: int = 100
-                      ):
-
-        # Calculate 3D distribution of fields
-        times = coefs.Times()
-        pmin  = [-grid_lim, -grid_lim, -grid_lim]
-        pmax  = [grid_lim, grid_lim, grid_lim]
-        grid  = [n_points, n_points, n_points]
-
-        generator = pyEXP.field.FieldGenerator(times, pmin, pmax, grid)
-        volumes = generator.volumes(basis, coefs)
-
-        volume = volumes[time][field]
-        
-        if field=="potl":
-            volume=np.abs(volume)
-
-        # Initialise plot
-        plot = k3d.plot()
-
-        value_range = [np.percentile(volume, 5), np.percentile(volume, 95)]
-        size = [-grid_lim, grid_lim, -grid_lim, grid_lim, -grid_lim, grid_lim]
-
-        volume = k3d.volume(volume.astype(np.float32), 
-                          alpha_coef=5,
-                          color_range=value_range,  
-                          color_map=k3d.matplotlib_color_maps.Viridis, 
-                          compression_level=7)
-        
-        volume.transform.bounds = [-size[0], size[0], -size[1], size[1], -size[2], size[2]]
-
-        plot += volume
-
-        return plot
-    
-    def plot_coefs_evolution(self,
-                             coefs, 
-                             l, 
-                             m,
-                             ax):
-    
-        coefs_values = coefs.getAllCoefs()
-        times = coefs.Times()
-        
-        spherical_index = (l * (l + 1)) // 2 + m
-        n_radial_terms = coefs_values.shape[1]
-
-        cmap = mpl.colormaps["inferno"]
-        norm = mpl.colors.Normalize(vmin=0, vmax=n_radial_terms)
-        sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-
-        for n_radial in range(n_radial_terms):
-            ax.plot(times, 
-                    coefs_values[spherical_index, n_radial, :],
-                    c=cmap(norm(n_radial)))
-            
-        ax.set_yscale("log")
-        ax.set_ylabel("Coefficients amplitude")
-        ax.set_xlabel("Time")
-
-        cbar = plt.colorbar(sm, ax=ax)
-        cbar.set_label("Radial order")
-
-        ax.set_title(f"l={l}, m={m}")
-        return ax
     
     def get_SNR_matrix(self, 
-                       PartType: int,
+                       basis_PartType: int,
                        time: float, 
                        decorrelate=False):
         """
@@ -1327,13 +939,13 @@ class EXPBFE_builder():
         # Get the values and covariance of the coefficients for the basis at time t
         # output is a list where each element refers to a given spherical orders
         
-        covar = self.__get_CoefCovariance__(PartType=PartType)
+        covar = self.__get_CoefCovariance__(PartType=basis_PartType)
         coefs_var_subsamples = covar.getCoefCovariance(time)
         
         n_subsamples = len(coefs_var_subsamples)
         
         # Read-in the order of the expansion
-        with open(self.basis_files_dict[PartType], "r") as yaml_file:
+        with open(self.basis_files_dict[basis_PartType], "r") as yaml_file:
             basis_params = yaml.safe_load(yaml_file)
             lmax = basis_params["parameters"]["Lmax"]
 
@@ -1372,12 +984,12 @@ class EXPBFE_builder():
 
 
     def suppress_coefficients(self,
-                              PartType,
+                              basis_PartType,
                               mask,
                               update=False):
         
         # Read original coefficients
-        coefs_file = self.coefs_files_dict[PartType]
+        coefs_file = self.coefs_files_dict[basis_PartType]
         coefs = pyEXP.coefs.Coefs.factory(coefs_file)
         coefs_values = coefs.getAllCoefs()
         
@@ -1396,7 +1008,7 @@ class EXPBFE_builder():
         
         if update:
             self.__update_coefs__(new_coefs_file=new_coefs_file,
-                                  PartType=PartType)
+                                  PartType=basis_PartType)
                     
         return new_coefs_file
 
@@ -1404,128 +1016,7 @@ class EXPBFE_builder():
     
 ########################################################################
 
-def plot_acceleration_field_xy(pot,
-                               r_vir,
-                               t=13*u.Gyr,
-                               grid_lim: float = 1.,
-                               n_points: int = 100,
-                               z_level: float = 0.0):
-    
-    x = np.linspace(-grid_lim, grid_lim, n_points)
-    y = np.linspace(-grid_lim, grid_lim, n_points)
-
-    Fx = np.zeros((n_points,n_points))
-    Fy = np.zeros((n_points,n_points))
-
-    for i, xi in enumerate(x):
-        for j, yj in enumerate(y):
-            pos = [xi,yj,z_level]*u.kpc
-            acc = pot.acceleration(pos, t=t).to(u.km/u.s/u.Gyr).value
-            Fx[i,j] = acc[0][0]
-            Fy[i,j] = acc[1][0]
-
-    fig,axs = plt.subplots(1,2, sharex=True, sharey=True, layout="constrained")
-
-    axs[0].pcolormesh(x,y, Fx, 
-                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
-                    cmap="seismic")
-    plot = axs[1].pcolormesh(x,y, Fy, 
-                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
-                    cmap="seismic")
-
-    cbar = plt.colorbar(plot, ax=axs[:], orientation="horizontal", shrink=0.8)
-    cbar.set_label("Acceleration $[\\rm{km} \, \\rm{s}^{-1} \, \\rm{Gyr}^{-1}]$")
-    axs[0].set_xlabel("x [kpc]")
-    axs[1].set_xlabel("x [kpc]")
-    axs[0].set_ylabel("y [kpc]")
-    axs[0].set_aspect(1)
-    axs[1].set_aspect(1)
-    fig.suptitle(f"z = {z_level} [kpc]")
-
-    axs[0].set_title("$a_{X}$")
-    axs[1].set_title("$a_{Y}$")
-    
-    
-    for ax in axs:
-        # Plot circles showing 10 and 100 kpc
-        r_10kpc = 10 / r_vir
-        r_100kpc = 100 / r_vir
-        for r in [r_10kpc, r_100kpc]:
-            circle = patches.Circle(
-                        (0,0), # center coordinates
-                        r,  # Radius
-                        color="red",
-                        fill=False, 
-                        linewidth=2,
-                        linestyle='-'
-                    )
-            ax.add_patch(circle)
-    
-    
-    return fig,axs
-
-
-def plot_acceleration_field_xz(pot,
-                               r_vir,
-                               t=13*u.Gyr,
-                               grid_lim: float = 1.,
-                               n_points: int = 100,
-                               y_level: float = 0.0):
-    
-
-    x = np.linspace(-grid_lim, grid_lim, n_points)
-    z = np.linspace(-grid_lim, grid_lim, n_points)
-
-    Fx = np.zeros((n_points,n_points))
-    Fz = np.zeros((n_points,n_points))
-
-    for i, xi in enumerate(x):
-        for j, zj in enumerate(z):
-            pos = [xi,y_level,zj]*u.kpc
-            acc = pot.acceleration(pos, t=t).to(u.km/u.s/u.Gyr).value
-            Fx[i,j] = acc[0][0]
-            Fz[i,j] = acc[1][0]
-
-    fig,axs = plt.subplots(1,2, sharex=True, sharey=True, layout="constrained")
-
-    axs[0].pcolormesh(x,y_level, Fx, 
-                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
-                    cmap="seismic")
-    plot = axs[1].pcolormesh(x,y_level, Fz, 
-                    norm=mpl.colors.Normalize(vmin=-1000, vmax=1000),
-                    cmap="seismic")
-
-    cbar = plt.colorbar(plot, ax=axs[:], orientation="horizontal", shrink=0.8)
-    cbar.set_label("Acceleration $[\\rm{km} \, \\rm{s}^{-1} \, \\rm{Gyr}^{-1}]$")
-    axs[0].set_xlabel("x [kpc]")
-    axs[1].set_xlabel("x [kpc]")
-    axs[0].set_ylabel("z [kpc]")
-    axs[0].set_aspect(1)
-    axs[1].set_aspect(1)
-    fig.suptitle(f"y = {y_level} [R_vir]")
-
-    axs[0].set_title("$a_{X}$")
-    axs[1].set_title("$a_{Z}$")
-    
-    for ax in axs:
-        # Plot circles showing 10 and 100 kpc
-        r_10kpc = 10 / r_vir
-        r_100kpc = 100 / r_vir
-        for r in [r_10kpc, r_100kpc]:
-            circle = patches.Circle(
-                        (0,0), # center coordinates
-                        r,  # Radius
-                        color="red",
-                        fill=False, 
-                        linewidth=2,
-                        linestyle='-'
-                    )
-            ax.add_patch(circle)
-    
-    return fig,axs
-                        
-                            
-
+                                                   
 def convert_zrange_to_snapshots(z_range, snap_path):
     """
     Finds all snapshots within a given redshift range [z_min, z_max].
@@ -1595,6 +1086,7 @@ def convert_zrange_to_snapshots(z_range, snap_path):
     return selected_snaps.tolist()
 
 
+
 def get_snapshot_files(snap_path):
         
     # Get all the .hdf5 files in the directory
@@ -1608,13 +1100,52 @@ def get_snapshot_files(snap_path):
     return ordered_outputs
 
 
-def get_z_from_snapnum(snapshot_file):
+
+def reconstruct_track(ics, 
+                      pot,
+                      t1,
+                      t2,
+                      dt: float = 10*u.Myr):
     
-    with h5py.File(snapshot_file,"r") as f:
-        z = f['Header'].attrs['Redshift']
+    track_dict = {}
+
+    start=time.time()
+
+    orbit = pot.integrate_orbit(ics, 
+                                t1=t1, 
+                                t2=t2, 
+                                dt=dt, 
+                                Integrator=gi.DOPRI853Integrator, 
+                                Integrator_kwargs={"atol":1e-6})
+    print(f"Done in {time.time()-start:.1f} seconds.")
+    
+    # Exclude 1st and last snapshots because of BFE cannot be evaluated there
+    idx = np.arange(len(orbit.t))[1:-1]
+    # Position of the particle in the orbit
+    xyz = orbit.xyz.to(u.kpc)[:,idx] 
+    # Velocity of the particle in the orbit
+    v_xyz = orbit.v_xyz.to(u.km/u.s)[:,idx]
+    # Time steps at which the orbit is evaluated
+    times = orbit.t.to(u.Gyr)[idx]
+    # Compute the energy at each time step
+    V = pot.energy(xyz, t=times).to(u.km**2 / u.s**2) 
+    K = 0.5*np.sum(v_xyz**2, axis=0)
+    E = K + V
+    
+    # Compute apocenter, pericenter, and eccentricity of the orbit
+    apo = orbit.apocenter().to(u.kpc)
+    peri = orbit.pericenter().to(u.kpc)
+    ecc = orbit.eccentricity()
+    
+    # Save outputs
+    track_dict = {"xyz": xyz,
+                  "v_xyz": v_xyz,
+                  "E": E,
+                  "times": times,
+                  "apo": apo,
+                  "peri": peri, 
+                  "e": ecc}
         
-    return z
-
-
+    return track_dict
 
 
