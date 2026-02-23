@@ -709,7 +709,7 @@ class EXPBFE_builder():
         if PartType==1:
             yaml_file = self.__get_DM_basis_config__(dat, basis_params, density_params)
         elif PartType==4:
-            yaml_file = self.__get_star_basis_config__(dat, basis_params, density_params)
+            yaml_file = self.__get_star_basis_config__(basis_params, density_params)
         
         # Load the basis config in the yaml file with the basis parameters
         with open(yaml_file, "r") as f:
@@ -783,7 +783,6 @@ class EXPBFE_builder():
         return yaml_file
     
     def __get_star_basis_config__(self, 
-                                  dat,
                                   basis_params = {},
                                   density_params = {}):
 
@@ -859,11 +858,12 @@ class EXPBFE_builder():
             coefs = basis.createFromArray(mass, 
                                           pos, 
                                           time=t)
-            # Compute the covariance matrix for the coefficients
-            if PartType==1:
-                basis.writeCoefCovariance("sphereSL", "run0", t)
-            elif PartType==4:
-                basis.writeCoefCovariance("cylinder", "run0", t)
+            # Compute the covariance matrix for the coefficients only every 300 Myr
+            if np.isclose(t%0.3, 0, atol=1e-3) or snapshots.index(snap)==len(snapshots)-1:
+                if PartType==1:
+                    basis.writeCoefCovariance("sphereSL", "run0", t)
+                elif PartType==4:
+                    basis.writeCoefCovariance("cylinder", "run0", t)
             
             if coefs_container is None:
                 coefs_container = pyEXP.coefs.Coefs.makecoefs(coefs)
