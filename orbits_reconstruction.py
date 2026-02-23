@@ -12,7 +12,7 @@ import EXP4DREAMS
 from EXP_visual_fns import surface_projection, plot_SNR_mesh, plot_orbit_reconstruction, compare_distributions
 
 
-def visualize_expansion(exp_builder, filename):
+def visualize_expansion(exp_builder, filename, parttype=None, label=None):
     # 2D projections of the density and potential fields
     lim=20
     fig,axs = plt.subplots(2,3,sharex=True, sharey=True, 
@@ -93,8 +93,8 @@ def calculate_orbital_parameters(out: dict):
         r = np.linalg.norm(pos, axis=1)
         
         # 2. Basic Shape Parameters
-        peri = np.min(r)
-        apo = np.max(r)
+        peri = np.percentile(r, 10)
+        apo = np.percentile(r, 90)
         
         denom = apo + peri
         ecc = (apo - peri) / denom if denom > 0 else 0.0
@@ -148,19 +148,42 @@ def main(snap_path,
                                         z_range=z_range,
                                         output_dir=output_path)
     
-    # Visualize the density and potential fields
+    # Visualize the density and potential fields (halo / PartType=1)
     visualize_expansion(exp_builder=EXP_gen,
-                        filename=os.path.join(output_path,"original_fields.pdf"))
+                        filename=os.path.join(output_path,"original_fields_halo.pdf"),
+                        parttype=1,
+                        label="Halo (PartType=1)")
+
+    # Visualize the density and potential fields (stars / PartType=4)
+    visualize_expansion(exp_builder=EXP_gen,
+                        filename=os.path.join(output_path,"original_fields_stars.pdf"),
+                        parttype=4,
+                        label="Stars (PartType=4)")
     
     
     # Calculate SNR of basis coefficients
     print("Calculating SNR matrix...")
     start = time.time()
-    SNR_matrix_avg = np.mean([EXP_gen.get_SNR_matrix(basis_PartType=1, time=t) 
-                              for t in EXP_gen.coefs[1].Times()], axis=0)
+    SNR_matrix_avg = []
+    for i in range(len(EXP_gen.coefs[1].Times())):
+        SNR_matrix = EXP_gen.get_SNR_matrix(basis_PartType=1, time=i)
+        SNR_matrix_avg.append(SNR_matrix)
+    SNR_matrix_avg = np.mean(SNR_matrix_avg, axis=0)
     fig,ax = plt.subplots()
     plot_SNR_mesh(SNR_matrix_avg,ax)
     fig.savefig(os.path.join(output_path,"SNR_matrix_original.pdf"),dpi=400)
+    print(f"Time taken: {time.time() - start:.1f} seconds")
+    
+    # Repeat for stars
+    start = time.time()
+    SNR_matrix_avg_stars = []
+    for i in range(len(EXP_gen.coefs[4].Times())):
+        SNR_matrix = EXP_gen.get_SNR_matrix(basis_PartType=4, time=i)
+        SNR_matrix_avg_stars.append(SNR_matrix)
+    SNR_matrix_avg_stars = np.mean(SNR_matrix_avg_stars, axis=0)
+    fig,ax = plt.subplots()
+    plot_SNR_mesh(SNR_matrix_avg_stars,ax)
+    fig.savefig(os.path.join(output_path,"SNR_matrix_stars.pdf"),dpi=400)
     print(f"Time taken: {time.time() - start:.1f} seconds")
     
     
@@ -224,9 +247,25 @@ def main(snap_path,
                                       mask=mask,
                                       update=True)  
     
-    # Visualise the new fields
+    # Repeat for stars
+    mask_stars = SNR_matrix_avg_stars < 10
+    masked_SNR_matrix_stars = SNR_matrix_avg_stars.copy()
+    masked_SNR_matrix_stars[mask_stars] = 0.
+    fig,ax = plt.subplots()
+    plot_SNR_mesh(masked_SNR_matrix_stars, ax)
+    fig.savefig(os.path.join(output_path,"SNR_matrix_stars_masked.pdf"),dpi=400)
+    
+    # Visualise the new fields (halo / PartType=1)
     visualize_expansion(exp_builder=EXP_gen,
-                        filename=os.path.join(output_path,"masked_fields.pdf"))
+                        filename=os.path.join(output_path,"masked_fields_halo.pdf"),
+                        parttype=1,
+                        label="Masked Halo (PartType=1)")
+    
+    # Visualise the new fields (stars / PartType=4)
+    visualize_expansion(exp_builder=EXP_gen,
+                        filename=os.path.join(output_path,"masked_fields_stars.pdf"),
+                        parttype=4,
+                        label="Masked Stars (PartType=4)")
     
     # Repeat the orbit reconstruction with the masked expansion
     print("Reconstructing orbits in the masked BFE potential...")
@@ -281,7 +320,8 @@ if __name__ == "__main__":
     z_range = [1,0]
     
     basis_dict = {# PartType : basis params 
-                1: {"Lmax": 6, "nmax": 20, "numr": 2000, "rmin": 0.001, "rmax":2}
+                1: {"Lmax": 10, "nmax": 30, "numr": 2000, "rmin": 0.001, "rmax":2},
+                4: {"mmax": 12, "nmax": 24 }
                 }
     density_dict = {1: {"bins": 500, 
                         "rangevals": [0.1, 100] 

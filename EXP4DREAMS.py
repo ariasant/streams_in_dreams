@@ -805,6 +805,8 @@ class EXPBFE_builder():
                                  "vflag": 16,        # Verbosity flag: print diagnostics to stdout for vflag>0
                                  "logr": False,      # Log scaling in cylindrical radius
                                  "cachename": cache_file,  # The cache file name
+                                 "pcavar": True,     # enable to calculate the coefficients covariance matrix 
+                                 "subsamp": 1000,
                                 }   
                  }
         
@@ -859,7 +861,7 @@ class EXPBFE_builder():
                                           pos, 
                                           time=t)
             # Compute the covariance matrix for the coefficients only every 300 Myr
-            if np.isclose(t%0.3, 0, atol=1e-3) or snapshots.index(snap)==len(snapshots)-1:
+            if np.isclose(t%0.5, 0, atol=1e-3) or snapshots.index(snap)==len(snapshots)-1:
                 if PartType==1:
                     basis.writeCoefCovariance("sphereSL", "run0", t)
                 elif PartType==4:
@@ -944,40 +946,77 @@ class EXPBFE_builder():
         
         n_subsamples = len(coefs_var_subsamples)
         
-        # Read-in the order of the expansion
-        with open(self.basis_files_dict[basis_PartType], "r") as yaml_file:
-            basis_params = yaml.safe_load(yaml_file)
-            lmax = basis_params["parameters"]["Lmax"]
+        if basis_PartType==1:
+        
+            # Read-in the order of the expansion
+            with open(self.basis_files_dict[basis_PartType], "r") as yaml_file:
+                basis_params = yaml.safe_load(yaml_file)
+                lmax = basis_params["parameters"]["Lmax"]
+                nmax = basis_params["parameters"]["nmax"]
 
-        SNR_mesh = []
-        for l in range(lmax+1):
-            for m in range(l+1):
+            SNR_mesh = []
+            for l in range(lmax+1):
+                for m in range(l+1):
+                    
+                    # Define the index of the coefficients and covariance basis in the outputs
+                    spherical_index = (l * (l + 1)) // 2 + m
+                    
+                    # Read coefficients from each subsample
+                    sumCof = np.zeros((nmax), dtype=np.complex128)
+                    sumVar = np.zeros((nmax, nmax), dtype=np.complex128)
+                    for subsample in coefs_var_subsamples:
+                        sumCof += subsample[spherical_index][0]
+                        sumVar += subsample[spherical_index][1]
+                    # Subtract cross-samples covariance
+                    sumVar -= np.outer(sumCof, sumCof.conj())
+                    
+                    if decorrelate:
+                        # Make eigenvalue analysis on covariance matrix
+                        val, vec = np.linalg.eigh(sumVar)
+                        # Project coefficients into decorrelated basis
+                        b = np.dot(vec.T, sumCof)
+                        
+                        SNR = np.abs(b)**2 * n_subsamples / np.abs(val)
+                    
+                    else:
+                    
+                        SNR = np.abs(sumCof)**2 *n_subsamples / np.abs(np.diag(sumVar))
+
+                    SNR_mesh.append(SNR)
+                    
+        elif basis_PartType==4:
+            
+            with open(self.basis_files_dict[basis_PartType], "r") as yaml_file:
+                basis_params = yaml.safe_load(yaml_file)
+                mmax = basis_params["parameters"]["mmax"]
+                nmax = basis_params["parameters"]["nmax"]
                 
-                # Define the index of the coefficients and covariance basis in the outputs
-                spherical_index = (l * (l + 1)) // 2 + m
+            SNR_mesh = []
+            for m in range(mmax+1):
                 
                 # Read coefficients from each subsample
-                coefs_list = []
+                sumCof = np.zeros((nmax), dtype=np.complex128)
+                sumVar = np.zeros((nmax, nmax), dtype=np.complex128)
                 for subsample in coefs_var_subsamples:
-                    coefs_list.append(subsample[spherical_index][0])
-                coefs_list = np.vstack(coefs_list)
-
-                meanCof = np.mean(coefs_list,axis=0)
-                varCof = np.cov(coefs_list.T)
+                    sumCof += subsample[m][0]
+                    sumVar += subsample[m][1]
+                # Subtract cross-samples covariance
+                sumVar -= np.outer(sumCof, sumCof.conj())
                 
                 if decorrelate:
                     # Make eigenvalue analysis on covariance matrix
-                    val, vec = np.linalg.eigh(varCof)
+                    val, vec = np.linalg.eigh(sumVar)
                     # Project coefficients into decorrelated basis
-                    b = np.dot(vec.T, meanCof)
+                    b = np.dot(vec.T, sumCof)
                     
                     SNR = np.abs(b)**2 * n_subsamples / np.abs(val)
                 
                 else:
                 
-                    SNR = np.abs(meanCof)**2 * n_subsamples / np.abs(np.diag(varCof))
+                    SNR = np.abs(sumCof)**2 * n_subsamples / np.abs(np.diag(sumVar))
 
                 SNR_mesh.append(SNR)
+            
         
         
         return np.vstack(SNR_mesh)
