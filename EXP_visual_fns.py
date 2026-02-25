@@ -497,6 +497,16 @@ def plot_orbit_reconstruction(pid,
     y_bfe = bfe_tracks[pid]["xyz"][1]
     z_bfe = bfe_tracks[pid]["xyz"][2]
     
+    #  Find plotting limits based on the combined range of both tracks
+    x_min = min(np.concatenate([x_bfe, sim_tracks[pid]["xyz"][0]]))
+    x_max = max(np.concatenate([x_bfe, sim_tracks[pid]["xyz"][0]]))
+    y_min = min(np.concatenate([y_bfe, sim_tracks[pid]["xyz"][1]]))
+    y_max = max(np.concatenate([y_bfe, sim_tracks[pid]["xyz"][1]]))
+    z_min = min(np.concatenate([z_bfe, sim_tracks[pid]["xyz"][2]]))
+    z_max = max(np.concatenate([z_bfe, sim_tracks[pid]["xyz"][2]]))   
+    
+    min_val = min([x_min, y_min, z_min])
+    max_val = max([x_max, y_max, z_max])
     
     sim_times = [t.value for t in sim_tracks[pid]["times"]]
     
@@ -528,6 +538,11 @@ def plot_orbit_reconstruction(pid,
     lc1 = plot_colored_line(axs[1], x_bfe, z_bfe, times, cmap=cmap, linewidth=1)
     lc2 = plot_colored_line(axs[2], y_bfe, z_bfe, times, cmap=cmap, linewidth=1)
     
+    for ax in axs:
+        ax.set_aspect('equal')
+        ax.set_xlim(min_val, max_val)
+        ax.set_ylim(min_val, max_val)
+        
     # Add colorbar for the time dimension
     plt.colorbar(lc0, ax=axs, label='Time [Gyr]', shrink=0.5) 
     

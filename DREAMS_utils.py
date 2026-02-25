@@ -235,7 +235,7 @@ def get_MW_idx_at_snap(snap: int,
     # Get MW-mass halo from z = 0
     fof_path90 = f'{group_path}fof_subhalo_tab_{90:03}.hdf5'
     grp_cat90 = load_group_data(fof_path90)
-    model = group_path.split('/')[-4]
+    model = group_path.split('/')[-5]
     
     mw_idx = get_MW_idx(grp_cat90, model, param_dict) 
     
@@ -338,10 +338,17 @@ def load_zoom_particle_data_pynbody(snap_path: str,
         try:
             # Masses are not stored with the other info
             with h5py.File(f'{snap_path}snap_{snap:03}.hdf5') as ofile:
-                out['Masses'] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
-                mapped_name = name_map('Masses', reverse=True)
-                out[mapped_name].units = unit_dict['Masses']
-                out[mapped_name] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+                try:
+                    out['Masses'] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+                    mapped_name = name_map('Masses', reverse=True)
+                    out[mapped_name].units = unit_dict['Masses']
+                    out[mapped_name] = np.ones(ofile['PartType1/Masses'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+                except KeyError:
+                    out['Masses'] = np.ones(ofile['PartType1/ParticleIDs'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+                    mapped_name = name_map('Masses', reverse=True)
+                    out[mapped_name].units = unit_dict['Masses']
+                    out[mapped_name] = np.ones(ofile['PartType1/ParticleIDs'][offsets[part_type]:offsets[part_type]+num_parts[part_type]].shape)*ofile['Header'].attrs['MassTable'][1]
+                
         except:
             with h5py.File(f'{snap_path}snapdir_{snap:03}/snap_{snap:03}.0.hdf5') as ofile:
                 out['Masses'] = np.ones(int(num_parts[part_type]))*ofile['Header'].attrs['MassTable'][1]

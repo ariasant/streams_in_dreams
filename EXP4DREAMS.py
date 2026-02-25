@@ -36,7 +36,10 @@ class DREAMSMW():
         
         # Find snapshot number corresponding to z=0
         snapshots = get_snapshot_files(snap_path=self.__snap_path__)
-        self.snap_z0 = int(snapshots[-1].split("_")[1])
+        try:
+            self.snap_z0 = int(snapshots[-1].split("_")[1])
+        except ValueError:
+            self.snap_z0 = int(snapshots[-1].split("_")[1].replace(".hdf5",""))
 
         ## Set coordinates frame of reference
         self.rotation_matrix = DREAMS_utils.get_rotation_matrix(snap_path=self.__snap_path__,
@@ -498,12 +501,15 @@ class DREAMSMW():
                 valid_snapshots.append(snap)
                 valid_data.append(p_data)
             except (FileNotFoundError, KeyError):
-                try:
-                    # Fallback path logic
-                    p_data = self.__load_part_data__(snap=snap, snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/", PartType=PartType)
-                    valid_snapshots.append(snap)
-                    valid_data.append(p_data)
-                except:
+                if "res_varied_tng" in self.__snap_path__:
+                    try:
+                        # Fallback path logic
+                        p_data = self.__load_part_data__(snap=snap, snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/", PartType=PartType)
+                        valid_snapshots.append(snap)
+                        valid_data.append(p_data)
+                    except:
+                        continue
+                else:
                     continue
 
         if not valid_data:
@@ -689,12 +695,17 @@ class EXPBFE_builder():
         # Calculate the coefficients 
         print(f"Calculating the coefficients at snapshots: {self.snapshots}", flush=True)
         self.coefs = {}
+        # Save time steps at which the covariance matrix is calculated
+        self.covariance_times = []
         for PartType, basis in self.basis.items():
             start = time.time()
             self.coefs[PartType] = self.__get_coefs__(basis=basis,
                                                       snapshots=self.snapshots,
                                                       PartType=PartType)
             print(f"Time taken for PartType {PartType}: {(time.time()-start)/60:.2f} minutes", flush=True)
+        
+        print("Covariance matrices are calculated at the following time steps (Gyr):", self.covariance_times)
+        
     
     def __build_basis__(self, 
                         PartType: int,
@@ -843,9 +854,14 @@ class EXPBFE_builder():
             try:
                 dat = self.sim.__load_part_data__(snap=snap, PartType=PartType)   
             except FileNotFoundError:
-                dat = self.sim.__load_part_data__(snap=snap, 
-                                                  snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/", 
-                                                  PartType=PartType)
+                if "res_varied_tng" not in self.sim.__snap_path__:
+                    print(f"Snapshot {snap} not found")
+                    continue
+                else:
+                    dat = self.sim.__load_part_data__(snap=snap, 
+                                                      snap_path="/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/quick_snaps/", 
+                                                      PartType=PartType)
+
 
             # Scale to virial units
             mass = np.array(dat["mass"]) / self.sim.M_vir
@@ -862,6 +878,7 @@ class EXPBFE_builder():
                                           time=t)
             # Compute the covariance matrix for the coefficients only every 300 Myr
             if np.isclose(t%0.5, 0, atol=1e-3) or snapshots.index(snap)==len(snapshots)-1:
+                self.covariance_times.append(t)
                 if PartType==1:
                     basis.writeCoefCovariance("sphereSL", "run0", t)
                 elif PartType==4:
@@ -1133,7 +1150,10 @@ def get_snapshot_files(snap_path):
                if f.startswith('snap')]
     
     # Order files by snapshot
-    idx = np.argsort([int(out.split("_")[1]) for out in outputs])
+    try:
+        idx = np.argsort([int(out.split("_")[1]) for out in outputs])
+    except ValueError:
+        idx = np.argsort([int(out.split("_")[1].replace(".hdf5","")) for out in outputs])
     ordered_outputs = [outputs[i] for i in idx]
     
     return ordered_outputs
