@@ -226,7 +226,8 @@ def main(snap_path,
     
     # Plot some of the orbits
     fig,axs = plt.subplots(5,3)
-    for i,pid in enumerate(rng.choice(ids, size=5, replace=False)):
+    selected_ids = rng.choice(ids, size=5, replace=False)
+    for i,pid in enumerate(selected_ids):
         plot_orbit_reconstruction(pid=pid,
                                   sim_tracks=sim_tracks,
                                   bfe_tracks=bfe_tracks,
@@ -292,6 +293,7 @@ def main(snap_path,
         except TypeError:
             skipped_ids.append(pid)
             continue
+        
         bfe_tracks[pid] = EXP4DREAMS.reconstruct_track(ics,
                                                        pot=pot,
                                                        t1=t1,
@@ -309,7 +311,7 @@ def main(snap_path,
     
     # Plot some of the orbits
     fig,axs = plt.subplots(5,3)
-    for i,pid in enumerate(rng.choice(ids, size=5, replace=False)):
+    for i,pid in selected_ids:
         plot_orbit_reconstruction(pid=pid,
                                   sim_tracks=sim_tracks,
                                   bfe_tracks=bfe_tracks,
@@ -334,7 +336,7 @@ if __name__ == "__main__":
     #group_path = "/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/"
     snap_path = "/mnt/home/dreams/ceph/Sims/CDM/MW_zooms/SB5/box_695/"
     group_path = "/mnt/home/dreams/ceph/FOF_Subfind/CDM/MW_zooms/SB5/box_695/"  
-    output_path = "/mnt/home/asante/ceph/orbit_reconstruction/with_disk/695/"
+    output_path = "/mnt/home/asante/ceph/orbit_reconstruction/with_disk/high_cadence/"
     n_particles = 500
     z_range = [1,0]
     
