@@ -505,8 +505,8 @@ def plot_orbit_reconstruction(pid,
     z_min = min(np.concatenate([z_bfe, sim_tracks[pid]["xyz"][2]]))
     z_max = max(np.concatenate([z_bfe, sim_tracks[pid]["xyz"][2]]))   
     
-    min_val = min([x_min, y_min, z_min])
-    max_val = max([x_max, y_max, z_max])
+    min_val = min([x_min.value, y_min.value, z_min.value])
+    max_val = max([x_max.value, y_max.value, z_max.value])
     
     sim_times = [t.value for t in sim_tracks[pid]["times"]]
     

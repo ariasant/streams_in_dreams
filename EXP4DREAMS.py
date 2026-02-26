@@ -1170,12 +1170,30 @@ def reconstruct_track(ics,
 
     start=time.time()
 
-    orbit = pot.integrate_orbit(ics, 
-                                t1=t1, 
-                                t2=t2, 
-                                dt=dt, 
-                                Integrator=gi.DOPRI853Integrator, 
-                                Integrator_kwargs={"atol":1e-6})
+    try:
+        orbit = pot.integrate_orbit(ics, 
+                                    t1=t1, 
+                                    t2=t2, 
+                                    dt=dt, 
+                                    Integrator=gi.DOPRI853Integrator, 
+                                    Integrator_kwargs={"atol":1e-6})
+    except RuntimeError:
+        # Decrease the tolerance of the integrator
+        try:
+            orbit = pot.integrate_orbit(ics, 
+                                        t1=t1, 
+                                        t2=t2, 
+                                        dt=dt, 
+                                        Integrator=gi.DOPRI853Integrator, 
+                                        Integrator_kwargs={"atol":1e-4})
+        except RuntimeError:
+            # Revert to leapfrog integrator
+            orbit = pot.integrate_orbit(ics, 
+                                        t1=t1, 
+                                        t2=t2, 
+                                        dt=dt, 
+                                        Integrator=gi.LeapfrogIntegrator)
+        
     print(f"Done in {time.time()-start:.1f} seconds.")
     
     # Exclude 1st and last snapshots because of BFE cannot be evaluated there

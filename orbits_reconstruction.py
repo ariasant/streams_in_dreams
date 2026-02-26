@@ -330,11 +330,11 @@ def main(snap_path,
         
 if __name__ == "__main__":
     
-    snap_path = "/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/" 
-    group_path = "/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/"
-    #snap_path = "/mnt/home/dreams/ceph/Sims/CDM/MW_zooms/SB5/box_695/"
-    #group_path = "/mnt/home/dreams/ceph/FOF_Subfind/CDM/MW_zooms/SB5/box_695/"  
-    output_path = "/mnt/home/asante/ceph/orbit_reconstruction/with_disk/high_cadence/"
+    #snap_path = "/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/" 
+    #group_path = "/mnt/home/jrose/ceph/res_varied_tng/adaptive/RUNs/output/"
+    snap_path = "/mnt/home/dreams/ceph/Sims/CDM/MW_zooms/SB5/box_695/"
+    group_path = "/mnt/home/dreams/ceph/FOF_Subfind/CDM/MW_zooms/SB5/box_695/"  
+    output_path = "/mnt/home/asante/ceph/orbit_reconstruction/with_disk/695/"
     n_particles = 500
     z_range = [1,0]
     
