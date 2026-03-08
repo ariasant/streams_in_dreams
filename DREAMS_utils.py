@@ -557,7 +557,7 @@ def get_rotation_matrix(snap_path: str,
 
 
 
-def return_density(r,weights=1.,rangevals=[-2, 6],bins=500,log=True, smooth=False):
+def return_density(r,weights=1.,rangevals=[-2, 6],bins=500,log_bins=True, smooth=False):
     """return_density
 
     simple binned density using logarithmically spaced bins
@@ -568,7 +568,7 @@ def return_density(r,weights=1.,rangevals=[-2, 6],bins=500,log=True, smooth=Fals
     weights     : (float or array) if float, single-mass of particles, otherwise array of particle masses
     rangevals   : (two value list) minimum log r, maximum log r
     bins        : (int) number of bins
-    log         : (bool) if True, compute logarithmic bins
+    log_bins         : (bool) if True, compute logarithmic bins
     smooth      : (bool) if True, smooth curve with gaussian filter
 
     returns
@@ -578,18 +578,14 @@ def return_density(r,weights=1.,rangevals=[-2, 6],bins=500,log=True, smooth=Fals
 
     """
     
-    if log:
-        r = np.log10(r)
-        rangevals = np.log10(rangevals)
-        # Radial bins edges
-        rbins = np.linspace(rangevals[0], rangevals[1], bins)
-        # Calculate the volume of each shell defined by two radial bins
-        V = 4/3*np.pi*(np.power(10,rbins[1:])**3 - np.power(10,rbins[:-1])**3)
+    if log_bins:
+        rbins = np.logspace(np.log10(rangevals[0]), np.log10(rangevals[1]), bins)
         
     else:
         rbins = np.linspace(rangevals[0], rangevals[1], bins)
-        # Calculate the volume of each shell defined by two radial bins
-        V = 4/3*np.pi*(rbins[1:]**3 - rbins[:-1]**3)
+        
+    # Calculate the volume of each shell defined by two radial bins
+    V = 4/3*np.pi*(rbins[1:]**3 - rbins[:-1]**3)
         
     # Calculate the total mass in each shell
     M, _ = np.histogram(r, bins=rbins, weights=weights)
@@ -602,8 +598,6 @@ def return_density(r,weights=1.,rangevals=[-2, 6],bins=500,log=True, smooth=Fals
         # Smooth density values
         density = gaussian_filter1d(density, 3.)
         
-    if log:
-        rcentre = np.power(10,rcentre)
 
     return rcentre,density
 
