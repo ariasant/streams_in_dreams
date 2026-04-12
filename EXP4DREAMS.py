@@ -291,12 +291,13 @@ class DREAMSMW():
         # Calculate density profile of the DM halo
         rbins, dvals = DREAMS_utils.return_density(r=dat["r"],
                                                    weights=dat["mass"], 
-                                                   bins=100,
-                                                   rangevals=[1,300])
+                                                   bins=200,
+                                                   rangevals=[0.5,400])
         # Fit NFW profile to the density profile
         popt, pcov = curve_fit(lambda r, c, R_vir : DREAMS_utils.NFW_profile(r, c, R_vir, rho_crit),
                        rbins, dvals,
-                       bounds=([1e-5, 1e-5], [1000, 1000]),
+                       p0=[10, 200],
+                       bounds=([1e-5, 1e-5], [50, 400]),
                        )
         
         r_scale = popt[1]/popt[0]
@@ -312,7 +313,7 @@ class DREAMSMW():
                                                      weights=dat["mass"],
                                                      rangevals=[0.5,max(R)],
                                                      bins=200,
-                                                     log=False,
+                                                     log_bins=False,
                                                      smooth=True)
 
         R_s = DREAMS_utils.get_scale_factor(Rbins, dvals_R, dvals_R[0])
@@ -326,7 +327,7 @@ class DREAMSMW():
                                                      weights=dat["mass"],
                                                      rangevals=[0,z.max()],
                                                      bins=200,
-                                                     log=False,
+                                                     log_bins=False,
                                                      smooth=True)
 
         z_s = DREAMS_utils.get_scale_factor(zbins, dvals_z, dvals_z[0])
