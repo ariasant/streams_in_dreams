@@ -157,10 +157,17 @@ def surface_projection(basis,
     
     # Initialise surface field generator
     times = coefs.Times()
+    
+    # Ensure extent is in EXP units, converting it if needed
+    for i in range(2):
+        for j in range(3):
+            if hasattr(extent[i][j], "unit"):
+                extent[i][j] = extent[i][j].to(exp_units["length"]).value
 
+        
     generator = pyEXP.field.FieldGenerator(times, 
-                                            [el.to(exp_units["length"]).value if el!=0 else 0. for el in extent[0]], 
-                                            [el.to(exp_units["length"]).value if el!=0 else 0. for el in extent[1]], 
+                                            extent[0], 
+                                            extent[1], 
                                             grid)
     
     surfaces = generator.slices(basis, coefs)
