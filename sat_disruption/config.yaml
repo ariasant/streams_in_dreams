@@ -1,0 +1,37 @@
+# Example run configuration for the satellite-disruption pipeline.
+#
+# The two time knobs are deliberately independent:
+#   dt      -> snapshot cadence (Myr). THIS is the parameter to vary.
+#   dt_int  -> internal integrator step (Myr). Fixed & small for accuracy;
+#              does NOT change when you change dt.
+
+run_name: test_run
+out_dir: ./runs
+seed: 42
+
+dt: 25.0          # Myr  <-- snapshot cadence (the key knob being varied)
+t_end: 3000.0     # Myr  <-- total integration time
+dt_int: 0.01      # Myr  <-- fixed internal step, independent of dt
+
+# Static analytic host potential. `type` is any class name in gala.potential;
+# `params` are in native galactic units (m: Msun, lengths: kpc, v: km/s).
+host_potential:
+  type: HernquistPotential
+  params:
+    m: 1.0e12
+    c: 15.0        # kpc
+  units: galactic
+  # Other examples:
+  #   type: NFWPotential
+  #   params: {m: 1.0e12, r_s: 15.0}
+  #   type: MilkyWayPotential      # prebuilt composite; params can be empty
+  #   params: {}                   # (MilkyWayPotential2022 needs gala >= 1.5)
+
+# Satellite (self-gravitating Plummer sphere) initial conditions.
+satellite:
+  M_sat: 1.0e8      # Msun
+  r_s: 0.3          # kpc, Plummer scale radius
+  N: 1000           # number of equal-mass particles
+  pos: [50.0, 0.0, 0.0]    # kpc, COM start (near apocenter)
+  vel: [0.0, 40.0, 0.0]    # km/s, COM velocity (eccentric orbit)
+  eps: null          # softening length (kpc); null -> r_s / sqrt(N)

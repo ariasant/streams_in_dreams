@@ -1,0 +1,11 @@
+# Generic dependency list (Linux/macOS/cluster, modern gala via conda-forge or
+# a source build). On Windows use setup_windows_uv.sh instead, which pins the
+# exact set captured in requirements-win-lock.txt (gala==1.4.1 + staged GSL).
+gala
+astropy
+numpy
+scipy
+h5py
+matplotlib
+pyyaml
+pytest

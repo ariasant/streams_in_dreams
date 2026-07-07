@@ -1,0 +1,24 @@
+# Small/fast config for smoke-testing the full pipeline end-to-end.
+# Reduced N and t_end so the O(N^2) direct summation stays quick.
+run_name: smoke
+out_dir: ./runs
+seed: 42
+
+dt: 25.0
+t_end: 300.0
+dt_int: 0.05        # slightly larger than production 0.01 to keep the smoke test fast
+
+host_potential:
+  type: HernquistPotential
+  params:
+    m: 1.0e12
+    c: 15.0
+  units: galactic
+
+satellite:
+  M_sat: 1.0e8
+  r_s: 0.3
+  N: 300
+  pos: [30.0, 0.0, 0.0]
+  vel: [0.0, 60.0, 0.0]
+  eps: null

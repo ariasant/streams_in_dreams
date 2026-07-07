@@ -1,0 +1,11 @@
+# virtual environment (contains a full Python + staged GSL DLLs; recreate with
+# setup_windows_uv.sh)
+.venv/
+
+# simulation outputs
+runs/
+
+# python caches
+__pycache__/
+*.pyc
+.pytest_cache/
