@@ -1,0 +1,41 @@
+# Representative perturbed-host run: a point-mass flyby of a live Plummer host.
+# All quantities are in system units (G below); map dt to Myr externally for the
+# cadence study. Switch perturber_type to small_satellite for the live-satellite variant.
+
+run_name: point_mass_run
+output_dir: ./runs/point_mass
+G: 1.0
+
+# --- Cadence (independent) -------------------------------------------------------
+dt: 1.0            # science snapshot cadence  (the variable to vary later)
+dt_int: 0.01       # fixed internal integrator step (hold accuracy constant)
+
+# --- Phase A: host ---------------------------------------------------------------
+N_host: 2000
+M_host: 1.0
+a_host: 1.0        # Plummer scale radius
+eps_host: 0.05     # softening
+t_relax: 8.0       # burn-in duration
+seed: 42
+force_method: direct   # 'direct' (exact brute force) or 'tree' (Barnes-Hut, uses theta)
+theta: 0.7
+parallel: true
+
+# --- Phase B: perturber ----------------------------------------------------------
+# The perturber is dropped from apocenter r_start and the tangential velocity needed to
+# reach pericenter r_peri is inferred; eccentricity and time-to-pericenter are derived.
+perturber_type: point_mass   # 'point_mass' or 'small_satellite'
+M_pert: 0.2
+r_start: 3.0       # starting separation (apocenter / turnaround)
+r_peri: 0.7        # target pericenter distance (must be < r_start)
+t_end: 18.0        # Phase B duration
+eps_pert: 0.05
+N_pert: 400        # small_satellite only
+a_pert: 0.3        # small_satellite only
+
+# --- Visualization ---------------------------------------------------------------
+gif_duration: 60   # wall-clock seconds
+gif_fps: 25
+gif_max_particles: 5000
+num_energy_samples: 120   # energy-conservation sample points (each an O(N^2) solve)
+snapshot_phase_a: false

@@ -1,0 +1,34 @@
+# Tiny end-to-end smoke test: runs in a few seconds, exercises every stage
+# (Phase A -> handoff -> Phase B -> HDF5 -> diagnostics -> GIF).
+
+run_name: smoke
+output_dir: ./runs/smoke
+G: 1.0
+
+dt: 0.5
+dt_int: 0.02
+
+N_host: 200
+M_host: 1.0
+a_host: 1.0
+eps_host: 0.1
+t_relax: 1.0
+seed: 1
+force_method: direct
+theta: 0.7
+parallel: true
+
+perturber_type: point_mass
+M_pert: 0.2
+r_start: 2.0
+r_peri: 0.7
+t_end: 6.0
+eps_pert: 0.1
+N_pert: 60
+a_pert: 0.3
+
+gif_duration: 2
+gif_fps: 15
+gif_max_particles: 500
+num_energy_samples: 20
+snapshot_phase_a: false

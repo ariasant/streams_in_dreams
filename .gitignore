@@ -1,0 +1,7 @@
+# Generated N-body run outputs
+runs/
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
