@@ -90,6 +90,19 @@ def run_pipeline(cfg):
         host_pos, host_vel, host_mass,
         M_pert=cfg["M_pert"], r_start=cfg["r_start"], r_peri=cfg["r_peri"], G=G)
 
+    T_orb = placement["period"]
+    print(f"[Phase B] Kepler orbital period T = {T_orb:.4g}  "
+          f"(a={placement['a']:.4g}, ecc={placement['ecc']:.4f}, "
+          f"t_peri_estimate={placement['t_peri_estimate']:.4g})")
+    if cfg["t_end"] < T_orb:
+        import warnings
+        warnings.warn(
+            f"Phase B duration t_end={cfg['t_end']:.4g} is shorter than the estimated "
+            f"Kepler orbital period T={T_orb:.4g}. The perturber may not complete a full "
+            f"orbit; consider increasing t_end.",
+            stacklevel=2,
+        )
+
     p_pos, p_vel, p_mass, p_soft, p_flag = pert.build_perturber(
         com_pos, com_vel, perturber_type=cfg["perturber_type"],
         M_pert=cfg["M_pert"], eps_pert=cfg["eps_pert"], G=G,

@@ -2,8 +2,8 @@
 # All quantities are in system units (G below); map dt to Myr externally for the
 # cadence study. Switch perturber_type to small_satellite for the live-satellite variant.
 
-run_name: point_mass_run_1
-output_dir: ./runs/point_mass_1
+run_name: point_mass_run
+output_dir: ./runs/point_mass
 G: 1.0
 
 # --- Cadence (independent) -------------------------------------------------------
@@ -27,8 +27,8 @@ parallel: true
 perturber_type: point_mass   # 'point_mass' or 'small_satellite'
 M_pert: 0.2
 r_start: 5.0       # starting separation (apocenter / turnaround)
-r_peri: 0.5        # target pericenter distance (must be < r_start)
-t_end: 15.0        # Phase B duration
+r_peri: 0.7        # target pericenter distance (must be < r_start)
+t_end: 100.0        # Phase B duration
 eps_pert: 0.05
 N_pert: 400        # small_satellite only
 a_pert: 0.3        # small_satellite only

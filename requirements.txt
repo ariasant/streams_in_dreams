@@ -1,0 +1,13 @@
+numpy>=1.24,<2.0
+scipy>=1.10
+matplotlib>=3.7
+numba>=0.58
+pytreegrav>=1.1
+datashader>=0.15
+pillow>=10.0
+imageio>=2.31
+h5py>=3.8
+pyyaml>=6.0
+pandas>=2.0
+tqdm>=4.65
+pytest>=7.4
