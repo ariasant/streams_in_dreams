@@ -125,12 +125,12 @@ def make_gif(captures, out_path, cfg, size=500):
 # --------------------------------------------------------------------------------------
 # GIF from saved HDF5 snapshots (memory-safe; streams one snapshot at a time)
 # --------------------------------------------------------------------------------------
-def _extent_from_snapshots(path, host_pct=97.0, pad=1.15):
+def _extent_from_snapshots(path, host_pct=97.0, pad=1.15, stride=1):
     """Fixed view half-width, computed by streaming snapshots one at a time (no full load)."""
     host_half = 0.0
     pert_max = 0.0
     with h5py.File(path, "r") as f:
-        for name in sorted(k for k in f if k.startswith("snap_")):
+        for name in sorted(k for k in f if k.startswith("snap_"))[::stride]:
             g = f[name]
             flag = g["is_perturber"][:]
             pos = g["pos"][:]
@@ -142,17 +142,18 @@ def _extent_from_snapshots(path, host_pct=97.0, pad=1.15):
     return float(max(host_half, pert_max) * pad)
 
 
-def make_gif_from_snapshots(snapshot_path, out_path, cfg=None, size=500):
+def make_gif_from_snapshots(snapshot_path, out_path, cfg=None, size=500, stride=1):
     """Render a GIF from a saved HDF5 snapshot file, streaming one snapshot at a time.
 
     Unlike :func:`make_gif` (which uses the fine in-memory captures from a live run), this
     reads the dt-cadence science snapshots off disk, so it works after the fact and stays
     memory-safe at large ``N_host`` (only one snapshot, subsampled to ``gif_max_particles``,
     is resident at a time). Visualization parameters are read from the config embedded in the
-    file unless ``cfg`` is supplied.
+    file unless ``cfg`` is supplied. ``stride`` keeps every Nth snapshot (in write order), e.g.
+    to render a coarser science cadence than the file was written at without regenerating it.
     """
     with h5py.File(snapshot_path, "r") as f:
-        names = sorted(k for k in f if k.startswith("snap_"))
+        names = sorted(k for k in f if k.startswith("snap_"))[::stride]
         if cfg is None:
             cfg = yaml.safe_load(f.attrs.get("config_yaml", "")) or {}
     if not names:
@@ -161,7 +162,7 @@ def make_gif_from_snapshots(snapshot_path, out_path, cfg=None, size=500):
     max_particles = cfg.get("gif_max_particles")
     fps = cfg.get("gif_fps", 20)
     seed = cfg.get("seed", 0)
-    extent = _extent_from_snapshots(snapshot_path)
+    extent = _extent_from_snapshots(snapshot_path, stride=stride)
 
     frames = []
     with h5py.File(snapshot_path, "r") as f:

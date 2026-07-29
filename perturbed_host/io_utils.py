@@ -20,11 +20,11 @@ class SnapshotWriter:
         self.path = str(path)
         self._count = 0
         with h5py.File(self.path, "w") as f:
-            f.attrs["format"] = "perturbed_host.snapshots.v1"
+            f.attrs["format"] = "perturbed_host.snapshots.v2"
             if config_yaml is not None:
                 f.attrs["config_yaml"] = config_yaml
 
-    def write(self, step, time, pos, vel, masses, is_perturber):
+    def write(self, step, time, pos, vel, masses, is_perturber, accel):
         """Write one snapshot group. ``step`` is the global integrator step index."""
         with h5py.File(self.path, "a") as f:
             g = f.create_group(f"snap_{self._count:04d}")
@@ -32,6 +32,7 @@ class SnapshotWriter:
             g.attrs["time"] = float(time)
             g.create_dataset("pos", data=np.asarray(pos, dtype=np.float64))
             g.create_dataset("vel", data=np.asarray(vel, dtype=np.float64))
+            g.create_dataset("accel", data=np.asarray(accel, dtype=np.float64))
             g.create_dataset("mass", data=np.asarray(masses, dtype=np.float64))
             g.create_dataset("is_perturber", data=np.asarray(is_perturber, dtype=bool))
         self._count += 1
@@ -44,7 +45,7 @@ class SnapshotWriter:
 def read_snapshots(path):
     """Read all snapshots back, ordered by write index.
 
-    Returns a list of dicts with keys ``step, time, pos, vel, mass, is_perturber``.
+    Returns a list of dicts with keys ``step, time, pos, vel, accel, mass, is_perturber``.
     """
     out = []
     with h5py.File(str(path), "r") as f:
@@ -56,6 +57,7 @@ def read_snapshots(path):
                 time=float(g.attrs["time"]),
                 pos=g["pos"][:],
                 vel=g["vel"][:],
+                accel=g["accel"][:],
                 mass=g["mass"][:],
                 is_perturber=g["is_perturber"][:],
             ))

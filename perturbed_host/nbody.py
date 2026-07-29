@@ -171,7 +171,7 @@ def run_integration(pos, vel, masses, softening, is_perturber, *, dt_int, n_step
         t = t0 + i * dt_int
 
         if g in snapshot_steps and writer is not None:
-            writer.write(g, t, pos, vel, masses, is_perturber)
+            writer.write(g, t, pos, vel, masses, is_perturber, accel)
         if g in capture_steps:
             if g in energy_steps:
                 e, ke, pe = total_energy(pos, vel, masses, softening, G, method, theta,
