@@ -86,22 +86,35 @@ def run_pipeline(cfg):
         snapshot_steps=snap_A, capture_steps=cap_A, energy_steps=ener_A, writer=writer)
 
     # --- Phase B: inject the perturber and continue ---------------------------------
+    circular = cfg.get("circular", False)
     com_pos, com_vel, placement = pert.place_perturber(
         host_pos, host_vel, host_mass,
-        M_pert=cfg["M_pert"], r_start=cfg["r_start"], r_peri=cfg["r_peri"], G=G)
+        M_pert=cfg["M_pert"], r_start=cfg["r_start"], circular=circular, G=G)
 
-    T_orb = placement["period"]
-    print(f"[Phase B] Kepler orbital period T = {T_orb:.4g}  "
-          f"(a={placement['a']:.4g}, ecc={placement['ecc']:.4f}, "
-          f"t_peri_estimate={placement['t_peri_estimate']:.4g})")
-    if cfg["t_end"] < T_orb:
-        import warnings
-        warnings.warn(
-            f"Phase B duration t_end={cfg['t_end']:.4g} is shorter than the estimated "
-            f"Kepler orbital period T={T_orb:.4g}. The perturber may not complete a full "
-            f"orbit; consider increasing t_end.",
-            stacklevel=2,
-        )
+    if circular:
+        T = placement["period"]
+        print(f"[Phase B] circular orbit at r_start={cfg['r_start']:.4g}, "
+              f"v_circ={placement['v_circ']:.4g}, period={T:.4g}")
+        if cfg["t_end"] < T:
+            import warnings
+            warnings.warn(
+                f"Phase B duration t_end={cfg['t_end']:.4g} is shorter than the circular "
+                f"orbital period T={T:.4g}. The perturber may not complete a full orbit; "
+                f"consider increasing t_end.",
+                stacklevel=2,
+            )
+    else:
+        t_ff = placement["t_freefall_estimate"]
+        print(f"[Phase B] radial drop from r_start={cfg['r_start']:.4g}, "
+              f"t_freefall_estimate={t_ff:.4g}")
+        if cfg["t_end"] < t_ff:
+            import warnings
+            warnings.warn(
+                f"Phase B duration t_end={cfg['t_end']:.4g} is shorter than the estimated "
+                f"two-body free-fall time t_freefall={t_ff:.4g}. The perturber may not reach "
+                f"the host; consider increasing t_end.",
+                stacklevel=2,
+            )
 
     p_pos, p_vel, p_mass, p_soft, p_flag = pert.build_perturber(
         com_pos, com_vel, perturber_type=cfg["perturber_type"],

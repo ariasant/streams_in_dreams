@@ -1,7 +1,17 @@
 # Generated N-body run outputs
 runs/
+expgala/
+EXP/
+gala/
+eigen-3*
+jobs/
+prospero_submit.sh
+prospero_submit_bfe_fit.sh
 
 # Python caches
 __pycache__/
 *.pyc
 .pytest_cache/
+
+perturbed_host/plots
+*.png

@@ -22,12 +22,12 @@ theta: 0.7
 parallel: true
 
 # --- Phase B: perturber ----------------------------------------------------------
-# The perturber is dropped from apocenter r_start and the tangential velocity needed to
-# reach pericenter r_peri is inferred; eccentricity and time-to-pericenter are derived.
+# The perturber is dropped from rest at separation r_start (zero velocity radial infall),
+# or set circular: true to place it on a circular orbit at r_start instead.
 perturber_type: point_mass   # 'point_mass' or 'small_satellite'
 M_pert: 0.2
-r_start: 3.0       # starting separation (apocenter / turnaround)
-r_peri: 0.7        # target pericenter distance (must be < r_start)
+r_start: 3.0       # starting separation from the host COM
+circular: false    # false = radial drop from rest, true = circular orbit at r_start
 t_end: 18.0        # Phase B duration
 eps_pert: 0.05
 N_pert: 400        # small_satellite only

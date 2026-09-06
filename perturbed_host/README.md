@@ -22,14 +22,15 @@ Two phases with an explicit array-concatenation handoff (no array resizing mid-l
   `point_mass` (one softened particle — the clean Keplerian baseline) or `small_satellite`
   (its own live self-gravitating Plummer sphere that can tidally disrupt).
 
-The perturber is placed on a **bound Kepler orbit, dropped from apocenter**: you set the
-starting separation `r_start` (the apocenter) and the target pericenter `r_peri`, and the code
-*infers the velocity* — the tangential speed at apocenter (from vis-viva) needed to reach
-`r_peri`. Starting at apocenter (zero radial velocity) makes the placement unambiguous, and
-the eccentricity `e = (r_start - r_peri)/(r_start + r_peri)` and time-to-pericenter (`T/2`) are
-derived and reported. This is only a two-body estimate — the live host and dynamical friction
-perturb the real trajectory — so the pipeline integrates it self-consistently and reports the
-*realized* pericenter passage against the estimate.
+By default the perturber is **dropped from rest**: you set the starting separation `r_start`
+and the perturber is placed there with zero velocity relative to the host, a pure radial
+infall. An analytic two-body free-fall time (point mass, rest-to-rest) is reported as a rough
+estimate of when it reaches the host. Set `circular: true` to instead place it on a circular
+orbit at `r_start` (tangential velocity from the point-mass `v_circ`); the analytic circular
+period is reported instead. Either way this is only a two-body estimate — the live host and
+dynamical friction perturb the real trajectory — so the pipeline integrates it self-consistently
+and reports the *realized* closest approach against the estimate (radial drop only; a circular
+placement has no pericenter to compare against).
 
 The **science cadence `dt`** (the variable to vary later) is decoupled from the **fixed
 internal step `dt_int`** (holds integration accuracy constant). HDF5 snapshots are written
@@ -43,7 +44,7 @@ All quantities are in **system units** (`G` configurable, default 1, with `M_hos
 | file | role |
 |------|------|
 | `nbody.py` | globals-free Plummer sampling + leapfrog (`generate_plummer`, `leapfrog_step`, `run_integration`) |
-| `perturber.py` | bound-eccentric Kepler placement + `point_mass`/`small_satellite` builder |
+| `perturber.py` | zero-velocity radial-drop placement + `point_mass`/`small_satellite` builder |
 | `simulation.py` | Phase A/B orchestration, step schedules, concatenation handoff |
 | `io_utils.py` | HDF5 snapshot writer/reader with a per-snapshot `is_perturber` flag |
 | `diagnostics.py` | energy, host density/dispersion, perturber orbit, Lagrange radii |
@@ -76,7 +77,8 @@ handles the Phase A/B change in particle count. Read back with `io_utils.read_sn
    the step at `t_relax` is the perturber injection, annotated).
 2. **Host density + velocity dispersion** at a few times through the encounter vs. the
    analytic Plummer profiles — confirms the host structurally responds.
-3. **Perturber orbit**: separation from the host COM vs. time, realized vs. target pericenter.
+3. **Perturber orbit**: separation from the host COM vs. time, realized closest approach vs.
+   the two-body free-fall time estimate.
 4. **Host Lagrange radii** (10/50/90% mass, host-only) vs. time.
 
 The radial-density binning mirrors `../DREAMS_utils.py:return_density` (log shells,
@@ -99,6 +101,9 @@ python -m venv .venv
 ```
 
 - `test_plummer_ic` — sampled density/dispersion vs. analytic Plummer.
-- `test_kepler_placement` — two-body integration of the apocenter drop reaches `r_peri` at ~`T/2`.
+- `test_radial_drop` — two-body integration of the zero-velocity drop reaches closest approach
+  at ~the estimated free-fall time.
+- `test_circular_placement` — two-body integration of a `circular=True` placement stays at
+  `r_start` and returns to its starting position after one period.
 - `test_handoff` — host state (and host-subset energy) preserved across the concatenation.
 - `test_io` — HDF5 round-trip including the Phase A/B particle-count change.

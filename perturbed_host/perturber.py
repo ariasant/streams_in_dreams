@@ -1,12 +1,12 @@
-"""Perturber initial conditions: a bound Kepler flyby of the host, dropped from apocenter.
+"""Perturber initial conditions: placed at a starting separation ``r_start``.
 
-The user sets the starting separation ``r_start`` and the target pericenter ``r_peri``; the
-code treats ``r_start`` as the orbit's apocenter (turnaround) and *infers* the velocity --
-the tangential speed at apocenter needed to reach ``r_peri``. Starting at apocenter makes the
-placement unambiguous (zero radial velocity, purely tangential), and the derived eccentricity
-and time-to-pericenter (half the orbital period) are reported. This is only a two-body
-*estimate* -- the live host and dynamical friction perturb the real trajectory -- so the
-pipeline integrates it self-consistently and checks the realized pericenter passage afterward.
+By default the perturber is placed on the +x axis at distance ``r_start`` from the host COM
+with zero velocity (in the host's frame) -- a pure radial infall, no orbit parameters to derive
+or tune. Set ``circular=True`` to instead place it on a circular orbit at ``r_start`` (tangential
+velocity from the point-mass ``v_circ = sqrt(G*M_tot/r_start)``). Both cases are two-body,
+point-mass estimates -- the live host and dynamical friction perturb the real trajectory -- so
+the reported timescales (free-fall time, circular period) are only a ballpark for sizing
+``t_end``.
 
 Two perturber flavours share this placement (both are "just more particles" downstream):
 a single softened point mass, or a small live self-gravitating Plummer satellite.
@@ -28,38 +28,34 @@ def com_state(pos, vel, masses):
     return r, v
 
 
-def place_perturber(host_pos, host_vel, host_mass, *, M_pert, r_start, r_peri, G=1.0,
-                    direction=1.0):
-    """Compute the perturber COM position/velocity for a bound orbit dropped from apocenter.
+def place_perturber(host_pos, host_vel, host_mass, *, M_pert, r_start, circular=False, G=1.0):
+    """Compute the perturber COM position/velocity at separation ``r_start``.
 
-    ``r_start`` is the apocenter (starting separation) and ``r_peri`` the target pericenter.
-    The perturber begins on the +x axis at ``r_start`` with a purely tangential velocity
-    (sense set by ``direction``, +/-1); the speed is inferred from vis-viva. Returns
-    ``(com_pos, com_vel, info)`` with absolute (host-COM-referenced) 3-vectors and the derived
-    orbit parameters, including ``t_peri_estimate = T/2`` (apocenter -> pericenter).
+    By default (``circular=False``) the perturber begins on the +x axis at rest relative to the
+    host (``com_vel`` equals the host's COM velocity) -- a radial drop. If ``circular=True`` it
+    instead gets a tangential velocity equal to the point-mass circular speed at ``r_start``.
+    Returns ``(com_pos, com_vel, info)`` with absolute 3-vectors and the two-body point-mass
+    estimates ``t_freefall_estimate`` (radial infall time) and ``period``/``v_circ`` (circular
+    orbit), any of which may be used to size ``t_end`` depending on ``circular``.
     """
-    if r_start <= r_peri:
-        raise ValueError(f"r_start ({r_start}) must exceed r_peri ({r_peri})")
-
     R_com, V_com = com_state(host_pos, host_vel, host_mass)
     M_host = float(np.sum(host_mass))
     M_tot = M_host + M_pert
 
-    r_apo = r_start
-    a = 0.5 * (r_apo + r_peri)                       # semi-major axis
-    ecc = (r_apo - r_peri) / (r_apo + r_peri)         # derived eccentricity
-    T = 2.0 * np.pi * np.sqrt(a ** 3 / (G * M_tot))   # orbital period
-    v_apo = np.sqrt(G * M_tot * (2.0 / r_apo - 1.0 / a))  # vis-viva at apocenter (tangential)
+    v_circ = np.sqrt(G * M_tot / r_start)
+    period = 2.0 * np.pi * r_start / v_circ
+    # Radial two-body free fall from rest: time to reach the centre is half the period of the
+    # degenerate ellipse with semi-major axis a = r_start / 2.
+    t_ff = (np.pi / (2.0 * np.sqrt(2.0))) * np.sqrt(r_start ** 3 / (G * M_tot))
 
-    # Apocenter on +x, tangential velocity along +/-y; orbit lies in the x-y plane.
-    rel_pos = np.array([r_apo, 0.0, 0.0])
-    rel_vel = np.array([0.0, direction * v_apo, 0.0])
+    rel_pos = np.array([r_start, 0.0, 0.0])
+    rel_vel = np.array([0.0, v_circ, 0.0]) if circular else np.zeros(3)
 
     com_pos = R_com + rel_pos
     com_vel = V_com + rel_vel
 
-    info = dict(a=a, ecc=ecc, period=T, r_peri=r_peri, r_apo=r_apo, r_start=r_apo,
-                v_start=float(v_apo), t_peri_estimate=0.5 * T, M_tot=M_tot,
+    info = dict(r_start=r_start, M_tot=M_tot, circular=circular,
+                t_freefall_estimate=float(t_ff), period=float(period), v_circ=float(v_circ),
                 host_com_pos=R_com, host_com_vel=V_com)
     return com_pos, com_vel, info
 

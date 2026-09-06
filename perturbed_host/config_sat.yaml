@@ -2,13 +2,13 @@
 # All quantities are in system units (G below); map dt to Myr externally for the
 # cadence study. Switch perturber_type to small_satellite for the live-satellite variant.
 
-run_name: point_mass_run
-output_dir: ./runs/point_mass_freefall
+run_name: sat_run
+output_dir: ./runs/sat_N1000
 G: 1.0
 
 # --- Cadence (independent) -------------------------------------------------------
-dt: 0.2            # science snapshot cadence  (the variable to vary later)
-dt_int: 0.01       # fixed internal integrator step (hold accuracy constant)
+dt: 10            # science snapshot cadence  (the variable to vary later)
+dt_int: 0.1       # fixed internal integrator step (hold accuracy constant)
 
 # --- Phase A: host ---------------------------------------------------------------
 N_host: 1000000
@@ -23,13 +23,13 @@ parallel: true
 
 # --- Phase B: perturber ----------------------------------------------------------
 # The perturber is dropped from rest at separation r_start (zero velocity radial infall).
-perturber_type: point_mass   # 'point_mass' or 'small_satellite'
+perturber_type: 'small_satellite'   # 'point_mass' or 'small_satellite'
 M_pert: 0.1
-r_start: 5.0       # starting separation from the host COM
-t_end: 200.0        # Phase B duration
+r_start: 10.0       # starting separation from the host COM
+t_end: 1000.0        # Phase B duration
 eps_pert: 0.05
-N_pert: 400        # small_satellite only
-a_pert: 0.3        # small_satellite only
+N_pert: 1000        # small_satellite only
+a_pert: 0.1        # small_satellite only
 
 # --- Visualization ---------------------------------------------------------------
 gif_duration: 60   # wall-clock seconds

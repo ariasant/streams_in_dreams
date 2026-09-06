@@ -21,7 +21,6 @@ parallel: true
 perturber_type: point_mass
 M_pert: 0.2
 r_start: 2.0
-r_peri: 0.7
 t_end: 6.0
 eps_pert: 0.1
 N_pert: 60

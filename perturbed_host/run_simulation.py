@@ -43,9 +43,12 @@ def main():
     results = simulation.run_pipeline(cfg)
 
     p = results["placement"]
-    print(f"[placement] r_start(apo)={p['r_start']:.3f} r_peri={p['r_peri']:.3f} "
-          f"-> a={p['a']:.3f} e={p['ecc']:.3f} v_start={p['v_start']:.3f} "
-          f"period={p['period']:.3f} t_peri_est={p['t_peri_estimate']:.3f}")
+    if p["circular"]:
+        print(f"[placement] r_start={p['r_start']:.3f} (circular) "
+              f"v_circ={p['v_circ']:.3f} period={p['period']:.3f}")
+    else:
+        print(f"[placement] r_start={p['r_start']:.3f} (zero velocity) "
+              f"t_freefall_est={p['t_freefall_estimate']:.3f}")
     print(f"[snapshots] wrote {results['n_snapshots']} snapshots -> {results['snapshot_path']}")
 
     if not args.no_diagnostics:
@@ -54,10 +57,10 @@ def main():
         o = summary["orbit"]
         for phase, drift in e.items():
             print(f"[energy] {phase}: max |dE/E| = {drift:.2e}")
-        print(f"[orbit] realized r_peri={o['realized_r_peri']:.3f} "
-              f"(target {o['target_r_peri']:.3f}), "
-              f"realized t_peri={o['realized_t_peri']:.3f} "
-              f"(two-body est. {o['target_t_peri']:.3f})")
+        ref = (f"(two-body free-fall est. {o['target_t_peri']:.3f})"
+               if o["target_t_peri"] is not None else "(no target: circular placement)")
+        print(f"[orbit] closest approach r={o['realized_r_peri']:.3f} "
+              f"at t={o['realized_t_peri']:.3f} {ref}")
 
     if not args.no_gif:
         gif_path = os.path.join(out_dir, f"{cfg['run_name']}.gif")

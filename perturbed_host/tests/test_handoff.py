@@ -29,8 +29,7 @@ def test_host_subset_energy_continuous():
                                         parallel=False)
 
     # Build Phase B by concatenating a point-mass perturber.
-    com_pos, com_vel, _ = place_perturber(pos, vel, mass, M_pert=0.2, r_start=2.0,
-                                          r_peri=0.7, G=G)
+    com_pos, com_vel, _ = place_perturber(pos, vel, mass, M_pert=0.2, r_start=2.0, G=G)
     p_pos, p_vel, p_mass, p_soft, p_flag = build_perturber(
         com_pos, com_vel, perturber_type="point_mass", M_pert=0.2, eps_pert=0.1, G=G)
 

@@ -5,8 +5,9 @@ the perturbation event:
 
 1. energy conservation vs. time (flagging the Phase A/B seam);
 2. host density + velocity-dispersion profiles at a few times through the encounter;
-3. perturber orbit -- separation from the host COM, with the realized pericenter passage
-   compared to the target ``r_peri`` and the two-body time estimate ``T/2``;
+3. perturber orbit -- separation from the host COM, with the realized closest approach
+   compared to the two-body free-fall time estimate (radial drop only; not applicable to a
+   circular placement);
 4. host Lagrange radii (10/50/90% mass) vs. time.
 
 The radial-density binning mirrors ``DREAMS_utils.return_density`` (log-spaced shells,
@@ -96,8 +97,12 @@ def energy_conservation(captures, t_relax, out_path):
     return summary
 
 
-def perturber_orbit(captures_B, out_path, target_r_peri, target_t_peri, t_relax):
-    """Separation between perturber COM and host COM vs. time; report realized pericenter."""
+def perturber_orbit(captures_B, out_path, t_relax, t_ref=None, t_ref_label=None):
+    """Separation between perturber COM and host COM vs. time; report closest approach.
+
+    ``t_ref`` is an optional two-body reference time (free-fall estimate for a radial drop,
+    ``None`` for a circular placement where no such feature exists) annotated on the plot.
+    """
     times, seps = [], []
     for c in captures_B:
         flag = c["is_perturber"]
@@ -116,11 +121,10 @@ def perturber_orbit(captures_B, out_path, target_r_peri, target_t_peri, t_relax)
 
     fig, ax = plt.subplots(figsize=(7, 4), layout="constrained")
     ax.plot(times - t_relax, seps, "-", color="C3")
-    ax.axhline(target_r_peri, ls="--", color="k", lw=1, label=f"target r_peri={target_r_peri:g}")
-    ax.axvline(target_t_peri, ls=":", color="k", lw=1,
-               label=f"two-body est. t_peri={target_t_peri:.2f}")
+    if t_ref is not None:
+        ax.axvline(t_ref, ls=":", color="k", lw=1, label=f"{t_ref_label} t={t_ref:.2f}")
     ax.plot(realized_t_peri, realized_r_peri, "o", color="C3",
-            label=f"realized ({realized_t_peri:.2f}, {realized_r_peri:.2f})")
+            label=f"closest approach ({realized_t_peri:.2f}, {realized_r_peri:.2f})")
     ax.set_xlabel("time since perturber injection")
     ax.set_ylabel("perturber-host separation")
     ax.legend()
@@ -128,15 +132,20 @@ def perturber_orbit(captures_B, out_path, target_r_peri, target_t_peri, t_relax)
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     return dict(realized_r_peri=realized_r_peri, realized_t_peri=realized_t_peri,
-                target_r_peri=target_r_peri, target_t_peri=target_t_peri)
+                target_t_peri=t_ref)
 
 
-def host_profiles(captures, cfg, out_path, t_peri_estimate, n_times=3):
-    """Host density and dispersion profiles at a few times spanning the encounter."""
-    # choose times: first, near the estimated pericenter, last
+def host_profiles(captures, cfg, out_path, t_feature, n_times=3):
+    """Host density and dispersion profiles at a few times spanning the encounter.
+
+    ``t_feature`` (relative to Phase B start) picks the middle snapshot: the estimated
+    free-fall arrival for a radial drop, or an arbitrary fraction of the period for a
+    circular orbit.
+    """
+    # choose times: first, near the feature time, last
     times = np.array([c["t"] for c in captures])
-    t_peri_abs = cfg["t_relax"] + t_peri_estimate
-    pick = sorted({0, int(np.argmin(np.abs(times - t_peri_abs))), len(captures) - 1})
+    t_feature_abs = cfg["t_relax"] + t_feature
+    pick = sorted({0, int(np.argmin(np.abs(times - t_feature_abs))), len(captures) - 1})
     rangevals = [0.2 * cfg["a_host"], 20.0 * cfg["a_host"]]
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), layout="constrained")
@@ -201,14 +210,21 @@ def make_all(results, out_dir):
     """Run every diagnostic; return a printable summary dict."""
     cfg = results["config"]
     tag = cfg["run_name"]
-    t_peri_est = results["placement"]["t_peri_estimate"]
+    placement = results["placement"]
+    if placement["circular"]:
+        t_feature = placement["period"] / 4.0  # arbitrary point in the orbit; no pericenter
+        t_ref, t_ref_label = None, None
+    else:
+        t_feature = placement["t_freefall_estimate"]
+        t_ref, t_ref_label = t_feature, "two-body free-fall est."
+
     energy = energy_conservation(
         results["captures"], results["t_relax"],
         os.path.join(out_dir, f"{tag}_energy.pdf"))
     orbit = perturber_orbit(
         results["captures_B"], os.path.join(out_dir, f"{tag}_orbit.pdf"),
-        cfg["r_peri"], t_peri_est, results["t_relax"])
+        results["t_relax"], t_ref=t_ref, t_ref_label=t_ref_label)
     host_profiles(results["captures"], cfg, os.path.join(out_dir, f"{tag}_profiles.pdf"),
-                  t_peri_est)
+                  t_feature)
     lagrange_radii(results["captures"], os.path.join(out_dir, f"{tag}_lagrange.pdf"))
     return dict(energy=energy, orbit=orbit)
